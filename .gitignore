@@ -1,0 +1,10 @@
+node_modules
+dist
+public/engine
+.DS_Store
+*.local
+.vite
+.vercel
+
+.env
+.env.local
