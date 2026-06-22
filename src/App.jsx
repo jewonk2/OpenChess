@@ -956,14 +956,27 @@ function MascotAvatar({ size = 44, name = "milku" }) {
 }
 function Mascot({ name = "milku", emotion = "great", size = 44, style }) {
   const src = MASCOT_ART[name + "_" + emotion] || "";
-  if (src) return <img src={src} alt="" width={size} height={size} style={{ flexShrink: 0, objectFit: "contain", filter: "drop-shadow(0 3px 4px rgba(0,0,0,.35))", ...style }} />;
-  return <MascotAvatar size={size} name={name} />;
+  const frame = {
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    width: size, height: size, flexShrink: 0,
+    borderRadius: Math.round(size * 0.26), overflow: "hidden",
+    background: "linear-gradient(180deg,#FBF4E6,#E7D7BC)",
+    border: "1px solid #C2A877",
+    boxShadow: "0 3px 0 #B59A6E, 0 7px 12px -7px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.55)",
+    ...style,
+  };
+  return (
+    <span style={frame}>
+      {src ? <img src={src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+           : <MascotAvatar size={Math.round(size * 0.86)} name={name} />}
+    </span>
+  );
 }
 function MascotBubble({ text, ply, mascot = "milku", emotion = "great" }) {
   const label = mascot === "kokoa" ? "KOKOA" : "MILKU";
   return (
     <div className="flex items-start gap-2" style={{ background: "linear-gradient(180deg,#3A2516,#241509)", borderRadius: 14, padding: "11px 13px", border: "1px solid #000", boxShadow: "inset 0 1px 0 rgba(255,255,255,.05)" }}>
-      <Mascot name={mascot} emotion={emotion} size={48} />
+      <Mascot name={mascot} emotion={emotion} size={60} />
       <div style={{ minWidth: 0 }}>
         <div style={{ color: T.brassHi, fontSize: 11, fontWeight: 800, marginBottom: 3 }}>{ply > 0 ? moveNumber(ply - 1) + " 진행 · " + label : label + " 코치"}</div>
         <p style={{ color: T.ivory, fontSize: 12.5, lineHeight: 1.5 }}>{text}</p>
@@ -1171,10 +1184,12 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
   const toggleKw = (kw) => setKwDraft((d) => d.includes(kw) ? d.filter((x) => x !== kw) : [...d, kw]);
   const explainLong = !!explain && explain.length > 90;
   const [mistakes, setMistakes] = useState([]);
+  const [analyzing, setAnalyzing] = useState(false);   // (UI8) 실수 분석 진행 표시
   useEffect(() => {
-    setMistakes([]);
+    setMistakes([]); setAnalyzing(false);
     if (!engine || engine.status !== "ready" || !stats || !stats.lines || !stats.lines.length) return;
     let cancelled = false;
+    setAnalyzing(true);
     (async () => {
       const base = [...sans, san]; const found = [];
       for (const ln of stats.lines) {
@@ -1190,13 +1205,13 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
           const pcp = prev.mate != null ? (prev.mate > 0 ? 1000 : -1000) : prev.cp;
           const acp = after.mate != null ? (after.mate > 0 ? 1000 : -1000) : after.cp;
           const drop = pcp + acp;   // prev=착수자 POV, after=상대 POV → 착수자 손실 = pcp-(-acp)
-          if (isUser && drop >= 100) { found.push({ seq: full.slice(base.length, i + 1), kind: drop >= 250 ? "blunder" : "inaccuracy", count: ln.count }); break; }
+          if (isUser && drop >= 100) { found.push({ seq: full.slice(base.length, i + 1), kind: drop >= 250 ? "blunder" : "inaccuracy", count: ln.count, color: ln.color }); break; }
           prev = after;
         }
       }
-      if (!cancelled) { found.sort((a, b) => b.count - a.count); setMistakes(found.slice(0, 5)); }
+      if (!cancelled) { found.sort((a, b) => b.count - a.count); setMistakes(found.slice(0, 5)); setAnalyzing(false); }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; setAnalyzing(false); };
   }, [sans.join(" "), san, engine.status, chesscom && chesscom.status, stats && stats.total]);
   useEffect(() => {
     if (!onSavePuzzle) return;
@@ -1322,16 +1337,25 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
                       </div>
                     )}
                     <div style={{ marginTop: 8 }}>
-                      <div style={{ fontWeight: 800, color: T.mistake, fontSize: 11.5, marginBottom: 2 }}>오프닝 실수 {engine && engine.status === "ready" ? "" : "(엔진 준비 중…)"}</div>
-                      {mistakes.length === 0 ? <div style={{ fontSize: 11.5, color: T.inkSoft }}>{engine && engine.status === "ready" ? "15수 이내에서 두드러진 실수가 발견되지 않았습니다." : "엔진이 준비되면 분석합니다."}</div>
+                      <div style={{ fontWeight: 800, color: T.mistake, fontSize: 11.5, marginBottom: 4 }}>오프닝 실수 <span style={{ color: T.inkSoft, fontWeight: 600 }}>(연동 계정이 둔 수만 굵게)</span></div>
+                      {analyzing ? (
+                        <div className="flex items-center gap-2" style={{ padding: "4px 0" }}>
+                          <Mascot name={ply % 2 === 0 ? "milku" : "kokoa"} emotion="think" size={42} />
+                          <span style={{ fontSize: 11.5, color: T.inkSoft }}>내 대국 기보를 분석하는 중…</span>
+                        </div>
+                      ) : mistakes.length === 0 ? <div style={{ fontSize: 11.5, color: T.inkSoft }}>{engine && engine.status === "ready" ? "15수 이내에서 두드러진 실수가 발견되지 않았습니다." : "엔진이 준비되면 분석합니다."}</div>
                         : mistakes.map((mt, idx) => {
                           const seqStr = [san, ...mt.seq]; // 표기: 집중 학습 수부터
                           return (
-                            <button key={idx} onClick={() => { const pre = [...sans, san, ...mt.seq.slice(0, -1)]; onJump && onJump(pre, mt.seq[mt.seq.length - 1]); }} className="press text-left" style={{ display: "block", width: "100%", fontFamily: "ui-monospace,monospace", fontSize: 12, color: T.ink, background: "none", border: "none", cursor: "pointer", padding: "2px 0", lineHeight: 1.6 }}>
+                            <button key={idx} onClick={() => { const pre = [...sans, san, ...mt.seq.slice(0, -1)]; onJump && onJump(pre, mt.seq[mt.seq.length - 1]); }} className="press text-left" style={{ display: "block", width: "100%", textAlign: "left", fontFamily: "ui-monospace,monospace", fontSize: 12, color: T.ink, background: "none", border: "none", cursor: "pointer", padding: "3px 0", lineHeight: 1.6, whiteSpace: "normal" }}>
                               {seqStr.map((mv, i) => {
                                 const isMistake = i === seqStr.length - 1;
+                                const moverWhite = (ply + i) % 2 === 0;
+                                const isUserMove = (moverWhite && mt.color === "w") || (!moverWhite && mt.color === "b");
                                 const num = moveNumber(ply + i);
-                                return <span key={i} style={isMistake ? { fontWeight: 900, textDecoration: "underline", color: mt.kind === "blunder" ? T.blunder : T.inaccuracy } : {}}>{num}{mv} </span>;
+                                const st = isMistake ? { fontWeight: 900, textDecoration: "underline", color: mt.kind === "blunder" ? T.blunder : T.inaccuracy }
+                                  : isUserMove ? { fontWeight: 800, color: T.ink } : { color: T.inkSoft, fontWeight: 500 };
+                                return <span key={i} style={st}>{num}{mv} </span>;
                               })}
                               <span style={{ color: T.inkSoft }}>({mt.count}회)</span>
                             </button>
@@ -1583,27 +1607,34 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
                 <span style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{mode === "master" ? "마스터 " : ""}{fmtFull(posGames)}</span>
               </div>
               {lastSan && curMove && (
-                <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid #E4D5B6" }}>
-                  <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E4D5B6" }}>
+                  <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
                     {curKind && QCOLOR[curKind] && <CircleBadge kind={curKind} />}
-                    <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 15, fontWeight: 800, color: T.ink }}>{moveNumber(ply - 1)}{lastSan}</span>
+                    <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 16, fontWeight: 800, color: T.ink }}>{moveNumber(ply - 1)}{lastSan}</span>
                     {curName && <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink, wordBreak: "keep-all" }}>{curName}</span>}
+                  </div>
+                  <div className="flex items-center flex-wrap" style={{ gap: 14, marginTop: 8 }}>
                     {curKind && <span style={{ fontSize: 12, fontWeight: 800, color: QCOLOR[curKind] || T.inkSoft }}>{QLABEL[curKind]}</span>}
-                    {curGames != null && <span style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(curGames)}회</span>}
+                    {curGames != null && <span style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(curGames)}회 진행</span>}
                   </div>
                   {curKws.length > 0 && (
-                    <div className="flex flex-wrap" style={{ gap: 4, marginTop: 6 }}>
-                      {curKws.map((k) => KW[k] && <span key={k} title={KW[k].desc} style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".04em", padding: "1px 5px", borderRadius: 3, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}
+                    <div className="flex flex-wrap" style={{ gap: 5, marginTop: 8 }}>
+                      {curKws.map((k) => KW[k] && <span key={k} title={KW[k].desc} style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".04em", padding: "2px 6px", borderRadius: 4, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}
                     </div>
                   )}
                 </div>
               )}
-              {explainFor(sans) && <p style={{ color: T.inkSoft, fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{explainFor(sans)}</p>}
+              {explainFor(sans) && <p style={{ color: T.inkSoft, fontSize: 12, marginTop: 10, lineHeight: 1.55 }}>{explainFor(sans)}</p>}
             </div>
             {moves.length === 0 ? (
               <div style={{ background: T.paper, borderRadius: 12, padding: 16, border: "1px dashed #C9B58C", textAlign: "center" }}>
+<<<<<<< HEAD
                 <div style={{ display: "flex", justifyContent: "center" }}><Mascot name="milku" emotion="sleep" size={56} /></div>
                 <p style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>최선의 수를 찾는 중입니다.</p>
+=======
+                <div style={{ display: "flex", justifyContent: "center" }}><Mascot name="milku" emotion="sleep" size={64} /></div>
+                <p style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>제안된 수가 없어요. 보드에서 직접 두면 그 수가 평가되어 블록으로 추가됩니다.</p>
+>>>>>>> 42f101f (feat: Batch2 - chess.com 계정 통계/도감 승률/실수 분석 진영반영 + 마스코트 프레임·헤더 간격)
               </div>
             ) : (() => {
               const bk = moves.filter((m) => m.book);
@@ -1644,7 +1675,7 @@ function WinBar({ wdl, height = 8 }) {
     </div>
   );
 }
-function DexMoveCard({ path, m, child, isUnlocked, hasChildren, wdl, onOpen }) {
+function DexMoveCard({ path, m, child, isUnlocked, hasChildren, wdl, cc, onOpen }) {
   const label = m.name || (child && child.opening ? child.opening.name : null) || (m.isMain ? "Main Line" : null);
   const childSans = [...path, m.san];
   return (
@@ -1659,15 +1690,22 @@ function DexMoveCard({ path, m, child, isUnlocked, hasChildren, wdl, onOpen }) {
       </div>
       {isUnlocked && label && <div style={{ fontSize: 12.5, fontWeight: 700, color: T.ink, marginTop: 3, wordBreak: "keep-all" }}>{label}</div>}
       {isUnlocked && wdl && <div style={{ marginTop: 8 }}><WinBar wdl={wdl} /></div>}
+      {isUnlocked && cc && cc.total > 0 && (
+        <div className="flex items-center justify-between" style={{ marginTop: 8, fontSize: 10.5, fontFamily: "ui-monospace,monospace", color: T.inkSoft, background: "rgba(60,138,60,.12)", border: "1px solid rgba(60,138,60,.3)", borderRadius: 7, padding: "4px 7px" }}>
+          <span style={{ fontWeight: 800, color: "#2E6E2E" }}>내 승률 {cc.winRate}%</span>
+          <span><span style={{ color: T.best }}>{cc.w}승</span> {cc.d}무 <span style={{ color: T.blunder }}>{cc.l}패</span> · {fmtFull(cc.total)}판</span>
+        </div>
+      )}
       <button onClick={onOpen} disabled={!hasChildren} className="press" style={{ marginTop: 10, width: "100%", padding: "8px 0", borderRadius: 9, border: "none", cursor: hasChildren ? "pointer" : "default", background: hasChildren ? "linear-gradient(180deg,#3A2516,#241509)" : "rgba(0,0,0,.12)", color: hasChildren ? T.brassHi : (isUnlocked ? "#A8906A" : "#5E4E38"), fontWeight: 700, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
         {hasChildren ? <>다음 수 살펴보기 <ChevronRight size={14} /></> : "마지막 수록 수"}
       </button>
     </div>
   );
 }
-function CollectionTab({ unlocked, liveOn, contentVer }) {
+function CollectionTab({ unlocked, liveOn, contentVer, chesscom }) {
   const [path, setPath] = useState([]);
   const [lc, setLc] = useState(null);
+  const ccReady = chesscom && chesscom.status === "ready";
   const node = snapNode(path);
   const baseMoves = node ? node.moves.slice() : (SNAP.tree[""] ? SNAP.tree[""].moves.slice() : []);
   addsFor(path.join(" ")).forEach((a) => { if (!baseMoves.some((x) => x.san === a.san)) baseMoves.push({ san: a.san }); });
@@ -1681,17 +1719,19 @@ function CollectionTab({ unlocked, liveOn, contentVer }) {
       <div className="flex items-center flex-wrap gap-1" style={{ marginBottom: 14, fontSize: 13 }}>
         {crumb.map((c, i) => <span key={i} className="inline-flex items-center">{i > 0 && <Crumb size={13} style={{ color: T.inkSoft, margin: "0 2px" }} />}<button onClick={() => setPath(path.slice(0, i))} className="press" style={{ color: i === crumb.length - 1 ? T.brass : T.inkSoft, fontWeight: i === crumb.length - 1 ? 800 : 600, fontFamily: i ? "ui-monospace,monospace" : "inherit", background: "none", border: "none", cursor: "pointer" }}>{c}</button></span>)}
       </div>
-      {opening && <div className="flex items-center gap-3" style={{ background: "linear-gradient(135deg,#3A2516,#241509)", border: "1px solid " + T.brass, borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
-        <Mascot name="kokoa" emotion="happy" size={40} />
+      {opening && <div className="flex items-center gap-3 flex-wrap" style={{ background: "linear-gradient(135deg,#3A2516,#241509)", border: "1px solid " + T.brass, borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
+        <Mascot name="kokoa" emotion="happy" size={48} />
         <div><div style={{ fontSize: 16, fontWeight: 800, color: T.ivoryHi }}>{opening.name}</div><div style={{ fontSize: 12, color: T.brassHi, fontFamily: "ui-monospace,monospace" }}>{opening.eco}</div></div>
         {lc && lc.wdl && <div style={{ marginLeft: "auto", width: 150 }}><WinBar wdl={lc.wdl} /></div>}
+        {ccReady && (() => { const cc = chesscom.analyze(path); return cc && cc.total > 0 ? <div style={{ fontSize: 11.5, fontFamily: "ui-monospace,monospace", color: T.ivory, background: "rgba(60,138,60,.25)", border: "1px solid rgba(120,200,120,.4)", borderRadius: 8, padding: "5px 9px" }}>내 chess.com 승률 <b style={{ color: "#9FE39F" }}>{cc.winRate}%</b> · {cc.w}/{cc.d}/{cc.l}</div> : null; })()}
       </div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {baseMoves.map((m) => {
           const childSans = [...path, m.san]; const child = snapNode(childSans);
           const hasChildren = (child && child.moves && child.moves.length > 0) || addsFor(childSans.join(" ")).length > 0;
           const isUnlocked = unlocked.has(childSans.join(" "));
-          return <DexMoveCard key={m.san} path={path} m={m} child={child} isUnlocked={isUnlocked} hasChildren={hasChildren} wdl={wdlFor(m.san)} onOpen={() => hasChildren && setPath(childSans)} />;
+          const cc = ccReady ? chesscom.analyze(childSans) : null;
+          return <DexMoveCard key={m.san} path={path} m={m} child={child} isUnlocked={isUnlocked} hasChildren={hasChildren} wdl={wdlFor(m.san)} cc={cc} onOpen={() => hasChildren && setPath(childSans)} />;
         })}
       </div>
     </div>
@@ -1793,14 +1833,14 @@ function PuzzleTab({ puzzles, solved, onSolved }) {
   const count = (k) => (k === "all" ? puzzles.length : puzzles.filter((p) => (p.theme || "punish") === k).length);
   return (
     <div>
-      <div className="flex items-center gap-2"><Mascot name="kokoa" emotion="celebrate" size={40} /><h2 style={{ fontSize: 18, fontWeight: 800, color: T.ivoryHi }}>퍼즐</h2></div>
+      <div className="flex items-center gap-2"><Mascot name="kokoa" emotion="celebrate" size={48} /><h2 style={{ fontSize: 18, fontWeight: 800, color: T.ivoryHi }}>퍼즐</h2></div>
       <p style={{ fontSize: 13, color: T.inkSoft, margin: "6px 0 12px" }}>학습 탭에서 탁월한 수·부정확한 수·실수에 들어가면 기물 희생·우위 점하기·실수 응징 퍼즐이 자동 저장됩니다. ({cleared.length}/{themed.length} 해결)</p>
       <div className="flex flex-wrap gap-2" style={{ marginBottom: 14 }}>
         {chips.map(([k, lb]) => { const on = filter === k; return (
           <button key={k} onClick={() => setFilter(k)} className="press" style={{ fontSize: 12, fontWeight: 800, padding: "6px 12px", borderRadius: 999, border: "1px solid " + (on ? T.brass : "#5A4630"), background: on ? "linear-gradient(180deg," + T.brass + ",#A8842F)" : "transparent", color: on ? "#241509" : T.brassHi, cursor: "pointer" }}>{lb} <span style={{ opacity: .7 }}>{count(k)}</span></button>
         ); })}
       </div>
-      {themed.length === 0 ? <div style={{ background: T.paper, border: "1px dashed #C9B58C", borderRadius: 12, padding: 20, textAlign: "center", color: T.inkSoft, fontSize: 13 }}><div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><Mascot name="kokoa" emotion="sleep" size={52} /></div>이 테마의 퍼즐이 아직 없어요.</div>
+      {themed.length === 0 ? <div style={{ background: T.paper, border: "1px dashed #C9B58C", borderRadius: 12, padding: 20, textAlign: "center", color: T.inkSoft, fontSize: 13 }}><div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><Mascot name="kokoa" emotion="sleep" size={60} /></div>이 테마의 퍼즐이 아직 없어요.</div>
         : <div>
             {open.length > 0 && <div style={{ marginBottom: 16 }}><div style={{ fontSize: 12.5, fontWeight: 800, color: T.brassHi, marginBottom: 8 }}>미해결 ({open.length})</div><div className="grid sm:grid-cols-2 gap-3">{open.map((p) => <PuzzleCard key={p.id} p={p} isSolved={false} onClick={() => setActive(p)} />)}</div></div>}
             {cleared.length > 0 && <div><div style={{ fontSize: 12.5, fontWeight: 800, color: T.best, marginBottom: 8 }}>해결된 퍼즐 ({cleared.length})</div><div className="grid sm:grid-cols-2 gap-3">{cleared.map((p) => <PuzzleCard key={p.id} p={p} isSolved={true} onClick={() => setActive(p)} />)}</div></div>}
@@ -1840,7 +1880,92 @@ function PgnImport({ bumpContent }) {
     </div>
   );
 }
-function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, user, isDev, isCodev, devOn, setDevOn, canAdd, canEdit, bumpContent, contentVer, openAuth }) {
+function AccountChessStats({ chesscom, username }) {
+  const [prof, setProf] = useState(null);
+  useEffect(() => {
+    let cc = false;
+    if (!username) { setProf(null); return; }
+    fetchChesscomProfile(username).then((p) => { if (!cc) setProf(p); }).catch(() => {});
+    return () => { cc = true; };
+  }, [username]);
+  const ready = chesscom && chesscom.status === "ready";
+  const overall = useMemo(() => (ready ? chesscom.analyze([]) : null), [ready, chesscom && chesscom.games]);
+  const openingStats = useMemo(() => {
+    if (!ready) return [];
+    const agg = {};
+    for (const g of chesscom.games) {
+      let name = null;
+      const lim = Math.min(g.moves.length, 16);
+      for (let i = 1; i <= lim; i++) { const nd = snapNode(g.moves.slice(0, i)); if (nd && nd.opening) name = nd.opening.name; }
+      if (!name) continue;
+      if (!agg[name]) agg[name] = { name, n: 0, w: 0, d: 0, l: 0 };
+      agg[name].n++; agg[name][g.result === "win" ? "w" : g.result === "loss" ? "l" : "d"]++;
+    }
+    return Object.values(agg).map((o) => ({ ...o, wr: Math.round(100 * o.w / o.n) }));
+  }, [ready, chesscom && chesscom.games]);
+  const mostUsed = useMemo(() => [...openingStats].sort((a, b) => b.n - a.n), [openingStats]);
+  const byWinrate = useMemo(() => openingStats.filter((o) => o.n >= 3).sort((a, b) => b.wr - a.wr || b.n - a.n), [openingStats]);
+
+  if (chesscom && chesscom.status === "loading") return <p style={{ fontSize: 12, color: T.inkSoft, marginTop: 10 }}>기보를 불러오는 중…</p>;
+  if (chesscom && chesscom.status === "error") return <p style={{ fontSize: 12, color: T.blunder, marginTop: 10 }}>기보를 불러오지 못했습니다. 계정을 확인하세요.</p>;
+  if (!ready) return null;
+
+  const rowStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #E4D5B6", fontSize: 12 };
+  return (
+    <div style={{ marginTop: 12 }}>
+      {/* 프로필 */}
+      <div className="flex items-center gap-3" style={{ marginBottom: 12 }}>
+        {prof && prof.avatar ? <img src={prof.avatar} alt="" style={{ width: 48, height: 48, borderRadius: 12, border: "1px solid #C9B58C" }} />
+          : <span style={{ width: 48, height: 48, borderRadius: 12, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 22 }}>{username[0].toUpperCase()}</span>}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{(prof && prof.username) || username}</div>
+          <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{prof ? ["래피드 " + (prof.rapid ?? "—"), "블리츠 " + (prof.blitz ?? "—"), "불릿 " + (prof.bullet ?? "—")].join(" · ") : "레이팅 불러오는 중…"}</div>
+        </div>
+      </div>
+      {/* 전적 */}
+      {overall && (
+        <div style={{ background: "rgba(0,0,0,.04)", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 800, color: T.ink }}>최근 12개월 전적</span>
+            <span style={{ fontSize: 12, fontFamily: "ui-monospace,monospace", color: T.inkSoft }}>{fmtFull(overall.total)}판</span>
+          </div>
+          <div style={{ fontSize: 13, fontFamily: "ui-monospace,monospace", color: T.ink }}>
+            <span style={{ color: T.best, fontWeight: 800 }}>{overall.w}승</span> {overall.d}무 <span style={{ color: T.blunder, fontWeight: 800 }}>{overall.l}패</span> · 승률 <b>{overall.winRate}%</b>
+          </div>
+          <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", marginTop: 8, border: "1px solid rgba(0,0,0,.2)" }}>
+            <div style={{ width: (100 * overall.w / overall.total) + "%", background: T.best }} />
+            <div style={{ width: (100 * overall.d / overall.total) + "%", background: "#9C8A6A" }} />
+            <div style={{ width: (100 * overall.l / overall.total) + "%", background: T.blunder }} />
+          </div>
+        </div>
+      )}
+      {/* 가장 많이 둔 오프닝 */}
+      {mostUsed.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: T.brass, marginBottom: 2 }}>가장 많이 둔 오프닝</div>
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: T.ink }}>{mostUsed[0].name}</div>
+          <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{mostUsed[0].n}판 · 승률 {mostUsed[0].wr}%</div>
+        </div>
+      )}
+      {/* 오프닝별 승률(높은→낮은) */}
+      {byWinrate.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: T.ink, marginBottom: 2 }}>오프닝별 승률 <span style={{ fontWeight: 600, color: T.inkSoft }}>(3판 이상)</span></div>
+          <div>
+            {byWinrate.map((o) => (
+              <div key={o.name} style={rowStyle}>
+                <span style={{ color: T.ink, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "62%" }}>{o.name}</span>
+                <span style={{ fontFamily: "ui-monospace,monospace", color: T.inkSoft, whiteSpace: "nowrap" }}><b style={{ color: o.wr >= 55 ? T.best : o.wr >= 45 ? T.brass : T.blunder }}>{o.wr}%</b> · {o.w}/{o.d}/{o.l}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {mostUsed.length === 0 && <p style={{ fontSize: 12, color: T.inkSoft }}>수록된 오프닝과 일치하는 대국을 찾지 못했습니다.</p>}
+    </div>
+  );
+}
+function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, chesscom, user, isDev, isCodev, devOn, setDevOn, canAdd, canEdit, bumpContent, contentVer, openAuth }) {
   const [cc, setCc] = useState(profile.chesscom || "");
   const [codevId, setCodevId] = useState("");
   const [ccState, setCcState] = useState("idle");   // idle | checking | failed
@@ -1860,7 +1985,7 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
   const removeCodev = async (id) => { CONTENT.codev = CONTENT.codev.filter((x) => x !== id); await bumpContent(); };
   return (
     <div className="max-w-xl">
-      <div className="flex items-center gap-2"><Mascot name="milku" emotion="wink" size={36} /><h2 style={{ fontSize: 18, fontWeight: 800, color: T.ivoryHi }}>설정</h2></div>
+      <div className="flex items-center gap-2"><Mascot name="milku" emotion="wink" size={44} /><h2 style={{ fontSize: 18, fontWeight: 800, color: T.ivoryHi }}>설정</h2></div>
 
       {/* 계정 정보 */}
       <div style={card}>
@@ -1941,6 +2066,7 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
             <button onClick={verifyChesscom} disabled={ccState === "checking"} className="press" style={{ padding: "9px 16px", borderRadius: 9, background: ccState === "failed" ? T.blunder : "linear-gradient(180deg,#3A2516,#241509)", color: ccState === "failed" ? "#fff" : T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer", whiteSpace: "nowrap" }}>{ccState === "checking" ? "확인 중…" : ccState === "failed" ? "연동 실패" : "연동하기"}</button>
           </div>
         )}
+        {linked && <AccountChessStats chesscom={chesscom} username={profile.chesscom} />}
       </div>
 
       {/* chess.com 계정 확인 모달 */}
@@ -2039,8 +2165,8 @@ function AuthModal({ onClose, onAuth, initialMode }) {
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 340, background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
         <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 2, marginBottom: 6, marginTop: -4 }}>
-          <Mascot name="milku" emotion={mode === "login" ? "wink" : "great"} size={54} />
-          <Mascot name="kokoa" emotion={mode === "login" ? "happy" : "celebrate"} size={54} />
+          <Mascot name="milku" emotion={mode === "login" ? "wink" : "great"} size={64} />
+          <Mascot name="kokoa" emotion={mode === "login" ? "happy" : "celebrate"} size={64} />
         </div>
         <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{mode === "login" ? "다시 오신 걸 환영해요" : "OpenChess 시작하기"}</div>
@@ -2113,7 +2239,7 @@ export default function App() {
       <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}"}</style>
       <header className="flex items-center justify-between" style={{ padding: "16px 20px", borderBottom: "1px solid #000", background: "linear-gradient(180deg,#3A2516,#2A1810)" }}>
         <div className="flex items-center gap-3">
-          <Mascot name="milku" emotion="great" size={36} style={{ filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))" }} />
+          <Mascot name="milku" emotion="great" size={44} style={{ filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))" }} />
           <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
         {user ? (
@@ -2145,7 +2271,7 @@ export default function App() {
       {toast && (
         <div style={{ position: "fixed", top: 70, left: "50%", transform: "translateX(-50%)", zIndex: 60, animation: "lockpop .4s ease" }}>
           <div className="flex items-center gap-2" style={{ background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, padding: "12px 18px", borderRadius: 12, border: "1px solid " + T.brass, boxShadow: "0 10px 30px -8px rgba(0,0,0,.7)" }}>
-            <Mascot name="kokoa" emotion="celebrate" size={34} />
+            <Mascot name="kokoa" emotion="celebrate" size={42} />
             <div><div style={{ fontWeight: 800, fontSize: 13, color: T.brassHi }}>새로운 오프닝 잠금 해제!</div><div style={{ fontSize: 12 }}>{toast.name}</div></div>
           </div>
         </div>
@@ -2153,9 +2279,9 @@ export default function App() {
 
       <main style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 18px 110px" }}>
         {tab === "learn" && <LearnTab engine={engine} liveOn={liveOn} onFocusActive={setFocusActive} unlockOpening={unlockOpening} onLearned={onLearned} chesscom={chesscom} onSavePuzzle={onSavePuzzle} contentVer={contentVer} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} sans={learnSans} setSans={setLearnSans} future={learnFuture} setFuture={setLearnFuture} extra={learnExtra} setExtra={setLearnExtra} />}
-        {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} liveOn={liveOn} contentVer={contentVer} />}
+        {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} />}
         {tab === "puzzle" && <PuzzleTab key={"puzzle-" + navNonce} puzzles={puzzles} solved={solved} onSolved={onSolved} />}
-        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} />}
+        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} />}
       </main>
 
       <nav style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: "linear-gradient(180deg,#2E1B10,#160C06)", borderTop: "1px solid #000", height: 66, paddingBottom: "env(safe-area-inset-bottom)" }}>
