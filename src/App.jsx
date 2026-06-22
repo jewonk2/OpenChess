@@ -1588,7 +1588,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
             <NavBtn onClick={fwd} disabled={!future.length}><ChevronRight size={17} /></NavBtn>
           </div>
         </div>
-        <p style={{ fontSize: 11, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}></p>
+        <p style={{ fontSize: 11, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>기물을 끌거나 눌러 어떤 수든 둘 수 있어요. 제안에 없는 수를 두면 평가해서 블록을 만들어 줍니다. 화살표는 이론 수만, 두께는 채택률 비례.</p>
         <div style={{ marginTop: 12 }}><MascotBubble text={lastMascot} ply={ply} mascot={ply % 2 === 0 ? "milku" : "kokoa"} emotion={(lastQ && lastQ.kind ? mascotForKind(lastQ.kind) : ["milku", "wink"])[1]} /></div>
       </div>
       <div>
@@ -1628,13 +1628,8 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
             </div>
             {moves.length === 0 ? (
               <div style={{ background: T.paper, borderRadius: 12, padding: 16, border: "1px dashed #C9B58C", textAlign: "center" }}>
-<<<<<<< HEAD
-                <div style={{ display: "flex", justifyContent: "center" }}><Mascot name="milku" emotion="sleep" size={56} /></div>
-                <p style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>최선의 수를 찾는 중입니다.</p>
-=======
                 <div style={{ display: "flex", justifyContent: "center" }}><Mascot name="milku" emotion="sleep" size={64} /></div>
                 <p style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>제안된 수가 없어요. 보드에서 직접 두면 그 수가 평가되어 블록으로 추가됩니다.</p>
->>>>>>> 42f101f (feat: Batch2 - chess.com 계정 통계/도감 승률/실수 분석 진영반영 + 마스코트 프레임·헤더 간격)
               </div>
             ) : (() => {
               const bk = moves.filter((m) => m.book);
@@ -1647,7 +1642,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
                   {nb.length > 3 && (
                     <button onClick={() => setShowAllNb((v) => !v)} className="press" style={{ width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 10, border: "1px dashed " + T.brass, background: "transparent", color: T.brassHi, fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
                       <ChevronRight size={14} style={{ transform: showAllNb ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform .15s" }} />
-                      {showAllNb ? "접기" : `더보기'}
+                      {showAllNb ? "접기" : `더보기 (비이론 수 ${Math.min(9, nb.length)}개)`}
                     </button>
                   )}
                 </>
@@ -2022,7 +2017,7 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
       {canEdit && (
         <div style={card}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>공동 개발자 지정</div>
-          <div className="flex gap-2"><input value={codevId} onChange={(e) => setCodevId(e.target.value)} placeholder="아이디" style={{ flex: 1, padding: "9px 11px", borderRadius: 9, border: "1px solid #C9B58C", background: "#fff", color: T.ink }} /><button onClick={addCodev} className="press" style={{ padding: "9px 16px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer" }}>추가</button></div>
+          <div className="flex gap-2"><input value={codevId} onChange={(e) => setCodevId(e.target.value)} placeholder="아이디 (영문+숫자)" style={{ flex: 1, padding: "9px 11px", borderRadius: 9, border: "1px solid #C9B58C", background: "#fff", color: T.ink }} /><button onClick={addCodev} className="press" style={{ padding: "9px 16px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer" }}>추가</button></div>
           <p style={{ fontSize: 11, color: T.inkSoft, marginTop: 6 }}>공동 개발자는 트리·분기점·해설을 <b>추가</b>만 할 수 있고 수정·삭제는 불가합니다.</p>
         </div>
       )}
@@ -2172,8 +2167,8 @@ function AuthModal({ onClose, onAuth, initialMode }) {
           <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{mode === "login" ? "다시 오신 걸 환영해요" : "OpenChess 시작하기"}</div>
           <button onClick={onClose} className="press" style={{ width: 28, height: 28, borderRadius: 8, border: "none", background: "#0002", color: T.ink, cursor: "pointer" }}>✕</button>
         </div>
-        <input value={id} onChange={(e) => setId(e.target.value)} placeholder="아이디" style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink }} />
-        <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호" onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink }} />
+        <input value={id} onChange={(e) => setId(e.target.value)} placeholder="아이디 (영문+숫자)" style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink }} />
+        <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호 (영문+숫자)" onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink }} />
         {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
         <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", marginBottom: 10 }}>{busy ? "처리 중…" : (mode === "login" ? "로그인" : "가입하고 시작")}</button>
         <div style={{ textAlign: "center", fontSize: 12.5, color: T.inkSoft }}>
