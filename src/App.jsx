@@ -225,6 +225,32 @@ async function genPunishLine(engine, sans, plies = 3) {
   }
   return out;
 }
+/* 풀이 라인을 '해결자(시작 시 둘 차례)가 확실한 우위를 점할 때까지' 연장.
+   각 사용자 수 뒤 결과 포지션을 평가(상대 최선 응수 반영)해 사용자 관점 평가가 target(cp) 이상이면 종료.
+   희생 콤비처럼 일시적으로 불리해도 보상이 실현되는 지점까지 이어진다. 항상 사용자 수로 끝맺음. */
+async function genAdvantageLine(engine, startSans, opts) {
+  const { maxPlies = 8, target = 160 } = opts || {};
+  const userWhite = startSans.length % 2 === 0;   // 시작 시 둘 차례 = 해결자
+  let cur = startSans.slice(); const out = [];
+  for (let i = 0; i < maxPlies; i++) {
+    const ev = await engine.evaluate(sansToFen(cur), 13);
+    if (!ev || !ev.best) break;
+    const movingWhite = cur.length % 2 === 0;
+    const san = uciToSan(boardFromSans(cur), ev.best, movingWhite ? "w" : "b");
+    if (!san) break;
+    out.push(san); cur = [...cur, san];
+    if (movingWhite === userWhite) {              // 방금 둔 것이 사용자 수 → 우위 판정
+      const ev2 = await engine.evaluate(sansToFen(cur), 12);
+      let userCp;
+      if (!ev2) userCp = 0;
+      else if (ev2.mate != null) { if (ev2.mate < 0) break; userCp = -100000; }   // 상대가 메이트당함 = 사용자 승
+      else userCp = -(ev2.cp || 0);               // ev2는 상대 관점 → 부호 반전
+      if (userCp >= target) break;
+    }
+  }
+  if (out.length) { const lastMoverWhite = (startSans.length + out.length - 1) % 2 === 0; if (lastMoverWhite !== userWhite) out.pop(); }   // 사용자 수로 끝맺음
+  return out;
+}
 
 /* ============================================================ 라이브 Lichess Explorer ============================================================ */
 const _lichessCache = new Map(); // url -> { t, data }
@@ -1262,7 +1288,7 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
       if (curated) { onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: curated.opening, setupSans: [...sans], mistakeSan: san, solution: curated.line, steps: curated.steps }); return; }
       if (engine && engine.status === "ready") {
         let cancelled = false;
-        genPunishLine(engine, [...sans, san], 3).then((line) => { if (!cancelled && line.length >= 2) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+        genAdvantageLine(engine, [...sans, san], { target: 170 }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
         return () => { cancelled = true; };
       }
       return;
@@ -1270,13 +1296,17 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
     // 부정확한 수 → 우위 점하기 (실수 응징과 동일 방식)
     if (kind === "inaccuracy" && engine && engine.status === "ready") {
       let cancelled = false;
-      genPunishLine(engine, [...sans, san], 3).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+      genAdvantageLine(engine, [...sans, san], { target: 120 }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
       return () => { cancelled = true; };
     }
-    // 탁월한 수 → 기물 희생하기 (직전 수 애니메이션 후 탁월한 수 찾기)
-    if (kind === "brilliant" && sans.length >= 1) {
+    // 탁월한 수 → 기물 희생하기 (직전 수 애니메이션 후 탁월한 수 + 보상 실현까지 이어지는 라인)
+    if (kind === "brilliant" && sans.length >= 1 && engine && engine.status === "ready") {
       const op = title || "오프닝";
-      onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [san], steps: [], auto: true });
+      let cancelled = false;
+      genAdvantageLine(engine, [...sans, san], { target: 110 }).then((line) => {
+        if (!cancelled) onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [san, ...line], steps: [], auto: true });
+      });
+      return () => { cancelled = true; };
     }
   }, [sans.join(" "), san, kind, engine && engine.status]);
   const punish = curated;
@@ -1491,12 +1521,15 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     if (brilliants.length && sans.length >= 1) {
       const b = brilliants[0];
       const op = b.name || (snapNode([...sans, b.san]) || {}).opening?.name || "오프닝";
-      onSavePuzzle({ id: "sac|" + key + "|" + stripSuffix(b.san), theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [b.san], steps: [], auto: true });
+      genAdvantageLine(engine, [...sans, b.san], { target: 110 }).then((line) => {
+        if (cancelled) return;
+        onSavePuzzle({ id: "sac|" + key + "|" + stripSuffix(b.san), theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [b.san, ...line], steps: [], auto: true });
+      });
     }
     // (우위 점하기) 부정확한 수: 실수 응징과 같은 방식으로 우위 점하는 수순 생성
     if (inacc.length) {
       const pick = inacc[Math.floor(Math.random() * inacc.length)];
-      genPunishLine(engine, [...sans, pick.san], 3).then((line) => {
+      genAdvantageLine(engine, [...sans, pick.san], { target: 120 }).then((line) => {
         if (cancelled || line.length < 1) return;
         const op = pick.name || (snapNode([...sans, pick.san]) || {}).opening?.name || "오프닝";
         onSavePuzzle({ id: "adv|" + key + "|" + stripSuffix(pick.san), theme: "advantage", name: puzzleName("advantage", [...sans], pick.san), opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
@@ -1505,8 +1538,8 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     // (실수 응징하기) 실수/블런더
     if (bad.length) {
       const pick = bad[Math.floor(Math.random() * bad.length)];
-      genPunishLine(engine, [...sans, pick.san], 3).then((line) => {
-        if (cancelled || line.length < 2) return;
+      genAdvantageLine(engine, [...sans, pick.san], { target: 170 }).then((line) => {
+        if (cancelled || line.length < 1) return;
         const op = pick.name || (snapNode([...sans, pick.san]) || {}).opening?.name || "오프닝";
         onSavePuzzle({ id: key + "|" + pick.san, theme: "punish", name: puzzleName("punish", [...sans], pick.san), opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
       });
@@ -1815,14 +1848,17 @@ function puzzleNo(id) { let h = 2166136261; const s = String(id); for (let i = 0
 // (UX6) 전역 풀이수: Supabase RPC 'puzzle_solve'(증가, 새 카운트 반환) / 테이블 'puzzle_stats' 조회. 미설정·미생성 시 무해하게 비활성.
 async function puzzleSolveInc(no) { if (!SB_ON) return null; try { const r = await sbRpc("puzzle_solve", { p_no: no }); return typeof r === "number" ? r : (r && r.solves) || null; } catch { return null; } }
 async function puzzleSolveCounts() { if (!SB_ON) return {}; try { const rows = await sbSelect("puzzle_stats?select=no,solves"); const m = {}; (rows || []).forEach((x) => { m[x.no] = x.solves; }); return m; } catch { return {}; } }
+// (UX6 전역 공유) 퍼즐 정의를 번호로 공유 저장/조회. 미설정·미생성 시 무해하게 비활성.
+async function puzzleShare(p) { if (!SB_ON || !p || !p.id) return; try { await sbUpsert("puzzles", { no: puzzleNo(p.id), data: p }); } catch { } }
+async function puzzleFetch(no) { if (!SB_ON) return null; try { const rows = await sbSelect("puzzles?no=eq." + no + "&select=data&limit=1"); return rows && rows[0] ? rows[0].data : null; } catch { return null; } }
 function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
   const theme = puzzle.theme || "punish";
   const setup = [...puzzle.setupSans, puzzle.mistakeSan];
   const userColor = setup.length % 2 === 0 ? "w" : "b";   // 보드 방향 고정(상대 응수 때도 반전하지 않음)
   const boardSize = useBoardSize(380);
   const [idx, setIdx] = useState(0);
-  const [intro, setIntro] = useState(true);   // (UX7) 진입 시 직전 수를 컴퓨터가 둔 것처럼 재생
-  useEffect(() => { setIntro(true); const t = setTimeout(() => setIntro(false), 2400); return () => clearTimeout(t); }, [puzzle.id]);
+  const [intro, setIntro] = useState(true);   // (UX7) 진입 시 직전 수를 계속 반복 재생, '풀기 시작'을 누르면 종료
+  useEffect(() => { setIntro(true); }, [puzzle.id]);
   const [sel, setSel] = useState(null);
   const [wrong, setWrong] = useState(null);     // { board, at:[r,c] }
   const [reply, setReply] = useState(null);      // { sans, san }  상대 응수 애니메이션
@@ -1862,7 +1898,7 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
   const pmEmotion = intro ? "think" : done ? "celebrate" : wrong ? "angry" : reply ? "wink"
     : theme === "sacrifice" ? "great" : theme === "advantage" ? "think" : "surprise";
   const pm = [color === "w" ? "milku" : "kokoa", pmEmotion];
-  const prompt = intro ? "직전 수를 재생하고 있어요 — 곧 당신 차례예요."
+  const prompt = intro ? "직전 수를 반복 재생 중 — 준비되면 ‘풀기 시작’을 누르세요."
     : done ? "✓ 완성! 모든 수를 찾았어요."
     : wrong ? "✕ 다른 수예요. ‘재시도’를 눌러 다시 풀어 보세요."
       : reply ? "상대 응수 중…"
@@ -1887,8 +1923,12 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
         : <Board board={wrong ? wrong.board : board} flip={userColor === "b"} size={boardSize} selected={sel} wrongAt={wrong ? wrong.at : null} onSquareClick={onSquareClick} onPieceDrag={(sq) => { const p = board[sq[0]][sq[1]]; if (userToMove && p && p.c === color) setSel(sq); }} onDrop={(sq) => { if (userToMove && sel) tryUserMove(sel, sq); }} onMove={(from, to) => { if (userToMove) tryUserMove(from, to); }} legalTargets={userToMove && sel ? legalDests(board, sel[0], sel[1], color, ep) : []} showEval={false} interactive={userToMove} />}
       <p style={{ fontSize: 13, color: done ? T.best : wrong ? T.blunder : T.ink, fontWeight: 700, marginTop: 12, textAlign: "center" }}>{prompt}</p>
       <div className="flex justify-center gap-2" style={{ marginTop: 10 }}>
-        <button onClick={restart} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>{done ? "다시 풀기" : "처음부터"}</button>
-        {wrong && <button onClick={retry} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.brass, color: "#2A1A0E", border: "none", fontWeight: 800, cursor: "pointer", fontSize: 12 }}>재시도</button>}
+        {intro ? (
+          <button onClick={() => setIntro(false)} className="press" style={{ padding: "9px 20px", borderRadius: 9, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", border: "none", fontWeight: 800, cursor: "pointer", fontSize: 13 }}>풀기 시작 →</button>
+        ) : (<>
+          <button onClick={restart} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>{done ? "다시 풀기" : "처음부터"}</button>
+          {wrong && <button onClick={retry} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.brass, color: "#2A1A0E", border: "none", fontWeight: 800, cursor: "pointer", fontSize: 12 }}>재시도</button>}
+        </>)}
       </div>
     </div>
   );
@@ -1923,11 +1963,12 @@ function PuzzleTab({ puzzles, solved, onSolved, onDeletePuzzle, solveCounts }) {
   const cleared = themed.filter((p) => solved.has(p.id)).sort(byOpening);
   const chips = [["all", "전체"], ["sacrifice", "기물 희생하기"], ["advantage", "우위 점하기"], ["punish", "실수 응징하기"]];
   const count = (k) => (k === "all" ? puzzles.length : puzzles.filter((p) => (p.theme || "punish") === k).length);
-  const solveByNumber = () => {
+  const solveByNumber = async () => {
     const n = parseInt(numInput, 10);
     if (!Number.isFinite(n)) { setNumMsg("번호를 입력하세요."); return; }
-    const hit = puzzles.find((p) => puzzleNo(p.id) === n);
-    if (hit) { setNumMsg(""); setNumInput(""); setActive(hit); } else setNumMsg("보유한 퍼즐 중 #" + n + " 번호가 없습니다.");
+    let hit = puzzles.find((p) => puzzleNo(p.id) === n);
+    if (!hit) { setNumMsg("불러오는 중…"); const d = await puzzleFetch(n); if (d) hit = d; }
+    if (hit) { setNumMsg(""); setNumInput(""); setActive(hit); } else setNumMsg("#" + n + " 번호의 퍼즐을 찾을 수 없습니다.");
   };
   return (
     <div>
@@ -2336,7 +2377,7 @@ export default function App() {
   const logout = useCallback(() => { setUser(null); setUserHash(null); setDevOn(false); setConfirmLogout(false); }, []);
   const unlockOpening = useCallback((keyStr) => { let isNew = false; setUnlocked((p) => { if (p.has(keyStr)) return p; isNew = true; const n = new Set(p); const parts = keyStr.split(" ").filter(Boolean); for (let i = 1; i <= parts.length; i++) n.add(parts.slice(0, i).join(" ")); return n; }); if (isNew) setNewUnlocks((n) => n + 1); return isNew; }, []);
   const onLearned = useCallback((name) => { setToast({ name }); setTimeout(() => setToast(null), 2600); }, []);
-  const onSavePuzzle = useCallback((pz) => setPuzzles((prev) => (deletedPuzzles.has(pz.id) || prev.some((x) => x.id === pz.id)) ? prev : [...prev, pz]), [deletedPuzzles]);
+  const onSavePuzzle = useCallback((pz) => { if (deletedPuzzles.has(pz.id)) return; setPuzzles((prev) => { if (prev.some((x) => x.id === pz.id)) return prev; puzzleShare(pz); return [...prev, pz]; }); }, [deletedPuzzles]);
   const onDeletePuzzle = useCallback((id) => { setPuzzles((prev) => prev.filter((x) => x.id !== id)); setDeletedPuzzles((p) => { const n = new Set(p); n.add(id); return n; }); setSolved((p) => { if (!p.has(id)) return p; const n = new Set(p); n.delete(id); return n; }); }, []);
   const onSolved = useCallback((id) => { setSolved((p) => { if (p.has(id)) return p; const n = new Set(p); n.add(id); return n; }); const no = puzzleNo(id); puzzleSolveInc(no).then((c) => { if (c != null) setSolveCounts((m) => ({ ...m, [no]: c })); }); }, []);
   const switchTab = (k) => { if (k === "dex") setNewUnlocks(0); setNavNonce((n) => n + 1); setTab(k); };
