@@ -227,20 +227,35 @@ async function genPunishLine(engine, sans, plies = 3) {
 }
 
 /* ============================================================ 라이브 Lichess Explorer ============================================================ */
+const _lichessCache = new Map(); // url -> { t, data }
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function fetchLichess(sans, master) {
   const uci = sansToUci(sans).join(",");
   const url = master
     ? "https://explorer.lichess.ovh/masters?play=" + uci + "&moves=14&topGames=0"
     : LICHESS_API + "?play=" + uci + "&moves=14&topGames=0&recentGames=0&speeds=blitz,rapid,classical&ratings=1600,1800,2000,2200,2500";
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("lichess " + res.status);
+  const hit = _lichessCache.get(url);
+  if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.data; // 10분 캐시(되돌리기·재방문 시 재요청·레이트리밋 방지)
+  let res = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await fetch(url);
+    if (res.status === 429) { // 레이트리밋: 백오프 후 재시도
+      const ra = parseFloat(res.headers.get("Retry-After"));
+      await _sleep(Number.isFinite(ra) ? ra * 1000 : 1200 * (attempt + 1));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) throw new Error("lichess " + (res ? res.status : "no-response"));
   const j = await res.json();
   const posTotal = (j.white || 0) + (j.draws || 0) + (j.black || 0);
   const moves = (j.moves || []).map((m) => {
     const tot = (m.white || 0) + (m.draws || 0) + (m.black || 0);
     return { san: m.san, games: tot, adopt: posTotal ? +(100 * tot / posTotal).toFixed(1) : 0, eco: m.opening ? m.opening.eco : null, name: m.opening ? m.opening.name : null, wdl: { w: m.white || 0, d: m.draws || 0, b: m.black || 0 } };
   });
-  return { posTotal, opening: j.opening || null, moves, wdl: { w: j.white || 0, d: j.draws || 0, b: j.black || 0 }, master: !!master };
+  const data = { posTotal, opening: j.opening || null, moves, wdl: { w: j.white || 0, d: j.draws || 0, b: j.black || 0 }, master: !!master };
+  _lichessCache.set(url, { t: Date.now(), data });
+  return data;
 }
 async function fetchWiki(name) {
   if (!name) return null;
@@ -774,28 +789,48 @@ function Board({ board, flip, size = 336, arrows = [], legalTargets = [], select
   const px = (r, c) => { const [vr, vc] = flip ? [7 - r, 7 - c] : [r, c]; return [vc * cell + cell / 2, vr * cell + cell / 2]; };
   const targetSet = new Set(legalTargets.map(([r, c]) => r + "," + c));
   const boardRef = useRef(null);
-  // (UX1) 모바일 드래그: 꾹 눌러 들어올린 기물이 손가락을 따라오고, 놓으면 착수/원위치 복귀
-  const [tdrag, setTdrag] = useState(null);   // { from:[r,c], piece, x, y }  (x,y = 보드 내부 px)
+  // (UX3) 모바일 드래그: 탭은 선택, 일정 거리 이동 또는 꾹 누름이 있어야 드래그가 시작되고,
+  //       드래그가 도중 취소되면 기물이 원래 크기·좌표로 복귀한다.
+  const [tdrag, setTdrag] = useState(null);   // 실제로 들어올린 상태 { from:[r,c], piece, x, y }
+  const pend = useRef(null);                  // 시작 대기 { from, piece, sx, sy, t0, engaged }
+  const DRAG_MOVE = 8;                         // px: 이 이상 움직이면 드래그로 인정
+  const DRAG_HOLD = 130;                       // ms: 이 이상 누르고 있으면 드래그로 인정
   const local = (clientX, clientY) => { const el = boardRef.current; if (!el) return null; const rect = el.getBoundingClientRect(); return [clientX - rect.left, clientY - rect.top]; };
   const sqFromXY = (lx, ly) => { const vc = Math.floor(lx / cell), vr = Math.floor(ly / cell); if (vr < 0 || vr > 7 || vc < 0 || vc > 7) return null; return tx(vr, vc); };
+  const engage = (lc) => { const pr = pend.current; if (!pr || pr.engaged) return; pr.engaged = true; setTdrag({ from: pr.from, piece: pr.piece, x: lc ? lc[0] : pr.sx, y: lc ? lc[1] : pr.sy }); onPieceDrag && onPieceDrag(pr.from); };
   const onTStart = interactive ? (e) => {
-    const t = e.touches[0]; const lc = local(t.clientX, t.clientY); if (!lc) return;
-    const sq = sqFromXY(lc[0], lc[1]); if (!sq) return;
+    const t = e.touches[0]; const lc = local(t.clientX, t.clientY); if (!lc) { pend.current = null; return; }
+    const sq = sqFromXY(lc[0], lc[1]); if (!sq) { pend.current = null; return; }
     const p = board[sq[0]][sq[1]];
-    if (p && onPieceDrag) { e.preventDefault(); setTdrag({ from: sq, piece: p, x: lc[0], y: lc[1] }); onPieceDrag(sq); }
+    if (!(p && onPieceDrag)) { pend.current = null; return; }   // 빈 칸/상대 기물: 탭은 onClick이 처리
+    e.preventDefault();
+    pend.current = { from: sq, piece: p, sx: lc[0], sy: lc[1], t0: Date.now(), engaged: false };
   } : undefined;
-  const onTMove = interactive ? (e) => { if (!tdrag) return; e.preventDefault(); const t = e.touches[0]; const lc = local(t.clientX, t.clientY); if (lc) setTdrag((d) => d ? { ...d, x: lc[0], y: lc[1] } : d); } : undefined;
+  const onTMove = interactive ? (e) => {
+    const pr = pend.current; if (!pr) return; e.preventDefault();
+    const t = e.touches[0]; const lc = local(t.clientX, t.clientY); if (!lc) return;
+    if (!pr.engaged) {
+      const moved = Math.hypot(lc[0] - pr.sx, lc[1] - pr.sy);
+      if (moved >= DRAG_MOVE || Date.now() - pr.t0 >= DRAG_HOLD) engage(lc); else return;
+    }
+    setTdrag((d) => d ? { ...d, x: lc[0], y: lc[1] } : d);
+  } : undefined;
   const onTEnd = interactive ? (e) => {
-    if (!tdrag) return; e.preventDefault();
+    const pr = pend.current; pend.current = null;
+    if (!pr) return; e.preventDefault();
     const t = e.changedTouches[0]; const lc = local(t.clientX, t.clientY); const end = lc ? sqFromXY(lc[0], lc[1]) : null;
-    const from = tdrag.from; setTdrag(null);
-    if (end && (end[0] !== from[0] || end[1] !== from[1])) { if (onMove) onMove(from, end); else { onDrop && onDrop(end); } }
-    else if (onSquareClick) onSquareClick(from);   // 제자리 = 탭(선택/해제)
+    const from = pr.from;
+    if (pr.engaged) {
+      setTdrag(null);   // 손을 떼면 기물 원래 크기로 복귀
+      if (end && (end[0] !== from[0] || end[1] !== from[1])) { if (onMove) onMove(from, end); else onDrop && onDrop(end); }
+      else if (onSquareClick) onSquareClick(from);   // 제자리에 내려놓음 = 원위치(선택 유지)
+    } else if (onSquareClick) onSquareClick(from);     // 드래그 미발동 = 탭(선택/해제)
   } : undefined;
+  const onTCancel = interactive ? () => { pend.current = null; setTdrag(null); } : undefined;   // 드래그 취소 → 원래 크기·좌표 복귀
   return (
     <div className="mx-auto select-none" style={{ width: inner + 20, maxWidth: "100%", padding: 10, borderRadius: 12, background: "linear-gradient(160deg,#3A2516,#241509)", boxShadow: "0 18px 40px -18px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06)", border: "1px solid #000" }}>
       {showEval && <EvalBar cp={evalCp} width={inner} />}
-      <div ref={boardRef} onTouchStart={onTStart} onTouchMove={onTMove} onTouchEnd={onTEnd} style={{ position: "relative", borderRadius: 4, overflow: "visible", border: "2px solid " + T.brass, touchAction: "none" }}>
+      <div ref={boardRef} onTouchStart={onTStart} onTouchMove={onTMove} onTouchEnd={onTEnd} onTouchCancel={onTCancel} style={{ position: "relative", borderRadius: 4, overflow: "visible", border: "2px solid " + T.brass, touchAction: "none" }}>
         {rows.map((row, ri) => (
           <div key={ri} style={{ display: "flex" }}>
             {row.map((p, ci) => {
@@ -995,6 +1030,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
   const [posGames, setPosGames] = useState(node ? node.posGames : null);
   const [posEval, setPosEval] = useState(null);
   const [engineNote, setEngineNote] = useState("");
+  const [masterEmpty, setMasterEmpty] = useState(false); // 마스터 기보가 실제로 없는 경우(엔진 추천 허용)
   const extraKey = (extraSans || []).join(",");
   const isMaster = mode === "master";
 
@@ -1007,7 +1043,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
       (extraSans || []).forEach((s) => { if (!seen.has(stripSuffix(s))) { list.push({ san: s, book: false, adopt: null, games: null, user: true }); seen.add(stripSuffix(s)); } });
       return list;
     };
-    setMoves(withExtra(base.map((m) => ({ ...m })))); setPosGames(node ? node.posGames : null); setPosEval(null); setEngineNote("");
+    setMoves(withExtra(base.map((m) => ({ ...m })))); setPosGames(node ? node.posGames : null); setPosEval(null); setEngineNote(""); setMasterEmpty(false);
     if (!liveOn) return;
     (async () => {
       try {
@@ -1015,12 +1051,17 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
         const normal = nr.status === "fulfilled" ? nr.value : null;
         const master = mr.status === "fulfilled" ? mr.value : null;
         if (cancelled) return;
-        // (기능2) 마스터 모드: 마스터 DB를 그대로 사용. 마스터 기보가 없으면 명확히 표기.
+        // (기능1) 마스터/일반 통계 반영. 마스터 fetch 실패와 "기보 없음"을 구분.
+        let active = null, emptyMaster = false;
         if (isMaster) {
-          if (!master || !master.moves.length) { setMoves(withExtra([])); setPosGames(master ? master.posTotal : 0); setEngineNote("이 포지션의 마스터 기보 없음"); return; }
+          if (master && master.moves.length) { active = master; }
+          else if (master && !master.moves.length) { setPosGames(master.posTotal); setEngineNote("이 포지션의 마스터 기보 없음 · 엔진 추천 수"); emptyMaster = true; }
+          else { active = normal; setEngineNote(normal && normal.moves.length ? "마스터 기보 로드 실패 · 일반 통계 표시" : "기보를 불러오지 못했습니다"); }
+        } else {
+          active = normal || master;
         }
-        const active = isMaster ? master : (normal || master);
-        if (!active || !active.moves.length) return;
+        setMasterEmpty(emptyMaster);
+        if (!active || !active.moves.length) { if (emptyMaster) setMoves(withExtra([])); return; }
         setPosGames(active.posTotal);
         const snapBy = Object.fromEntries(base.map((m) => [stripSuffix(m.san), m]));
         const masterAdoptBy = master ? Object.fromEntries(master.moves.map((m) => [stripSuffix(m.san), m.adopt])) : {};
@@ -1050,7 +1091,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
       // 비이론 수 9개 보장(일반 모드 한정): 엔진 평가 상위 수로 보충. 마스터 모드는 마스터 빈도 그대로.
       let cur = moves;
       const curNonbook = () => cur.filter((m) => !m.book && !m.eco).length;
-      if (!isMaster && curNonbook() < 9) {
+      if ((!isMaster || masterEmpty) && curNonbook() < 9) {
         const brd = boardFromSans(sans);
         const snapBy = node ? Object.fromEntries(node.moves.map((m) => [m.san, m])) : {};
         const pvs = await engine.evaluateMulti(sansToFen(sans), 13, 10);
@@ -1075,7 +1116,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
       }
     })();
     return () => { cancelled = true; };
-  }, [key, liveOn, engine.status, moves.length, isMaster]);
+  }, [key, liveOn, engine.status, moves.length, isMaster, masterEmpty]);
 
   const fallbackEval = useMemo(() => {
     const whites = moves.map((m) => whiteEval(m)).filter((v) => v != null);
@@ -1218,10 +1259,10 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
     const id = sans.join(" ") + "|" + san;
     // 실수/블런더 → 실수 응징하기
     if (isPunishable) {
-      if (curated) { onSavePuzzle({ id, theme: "punish", name: curated.opening + "에서 " + moveNumber(ply) + san + " 응징하기", opening: curated.opening, setupSans: [...sans], mistakeSan: san, solution: curated.line, steps: curated.steps }); return; }
+      if (curated) { onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: curated.opening, setupSans: [...sans], mistakeSan: san, solution: curated.line, steps: curated.steps }); return; }
       if (engine && engine.status === "ready") {
         let cancelled = false;
-        genPunishLine(engine, [...sans, san], 3).then((line) => { if (!cancelled && line.length >= 2) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: op + "에서 " + moveNumber(ply) + san + " 응징하기", opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+        genPunishLine(engine, [...sans, san], 3).then((line) => { if (!cancelled && line.length >= 2) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
         return () => { cancelled = true; };
       }
       return;
@@ -1229,13 +1270,13 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
     // 부정확한 수 → 우위 점하기 (실수 응징과 동일 방식)
     if (kind === "inaccuracy" && engine && engine.status === "ready") {
       let cancelled = false;
-      genPunishLine(engine, [...sans, san], 3).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: op + "에서 " + moveNumber(ply) + san + " 후 우위 점하기", opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+      genPunishLine(engine, [...sans, san], 3).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
       return () => { cancelled = true; };
     }
     // 탁월한 수 → 기물 희생하기 (직전 수 애니메이션 후 탁월한 수 찾기)
     if (kind === "brilliant" && sans.length >= 1) {
       const op = title || "오프닝";
-      onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: op + " · 기물 희생 찾기", opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [san], steps: [], auto: true });
+      onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [san], steps: [], auto: true });
     }
   }, [sans.join(" "), san, kind, engine && engine.status]);
   const punish = curated;
@@ -1450,7 +1491,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     if (brilliants.length && sans.length >= 1) {
       const b = brilliants[0];
       const op = b.name || (snapNode([...sans, b.san]) || {}).opening?.name || "오프닝";
-      onSavePuzzle({ id: "sac|" + key + "|" + stripSuffix(b.san), theme: "sacrifice", name: op + " · 기물 희생 찾기", opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [b.san], steps: [], auto: true });
+      onSavePuzzle({ id: "sac|" + key + "|" + stripSuffix(b.san), theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [b.san], steps: [], auto: true });
     }
     // (우위 점하기) 부정확한 수: 실수 응징과 같은 방식으로 우위 점하는 수순 생성
     if (inacc.length) {
@@ -1458,7 +1499,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
       genPunishLine(engine, [...sans, pick.san], 3).then((line) => {
         if (cancelled || line.length < 1) return;
         const op = pick.name || (snapNode([...sans, pick.san]) || {}).opening?.name || "오프닝";
-        onSavePuzzle({ id: "adv|" + key + "|" + stripSuffix(pick.san), theme: "advantage", name: op + "에서 " + moveNumber(ply) + (pick.disp || pick.san) + " 후 우위 점하기", opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
+        onSavePuzzle({ id: "adv|" + key + "|" + stripSuffix(pick.san), theme: "advantage", name: puzzleName("advantage", [...sans], pick.san), opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
       });
     }
     // (실수 응징하기) 실수/블런더
@@ -1467,7 +1508,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
       genPunishLine(engine, [...sans, pick.san], 3).then((line) => {
         if (cancelled || line.length < 2) return;
         const op = pick.name || (snapNode([...sans, pick.san]) || {}).opening?.name || "오프닝";
-        onSavePuzzle({ id: key + "|" + pick.san, theme: "punish", name: op + "에서 " + moveNumber(ply) + (pick.disp || pick.san) + " 응징하기", opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
+        onSavePuzzle({ id: key + "|" + pick.san, theme: "punish", name: puzzleName("punish", [...sans], pick.san), opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
       });
     }
     return () => { cancelled = true; };
@@ -1499,6 +1540,27 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     setLastQ({ to, kind: known ? mm.kind : "pending" });
     if (!known) evalMoveKind(prevSans, san).then((k) => { if (k) setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); });
   }, [evalMoveKind]);
+
+  // (수 아이콘 지속 + UI5 정확도) 현재 포지션에 도달한 '마지막 수'의 품질을 항상 재계산.
+  // 되돌리기/앞으로 등 어떤 방식으로 도달하든 보드 도착칸 아이콘과 헤더 수 체계가 정확히 표시되도록 엔진으로 티어를 다시 평가한다.
+  useEffect(() => {
+    if (!sans.length) { setLastQ(null); return; }
+    const prev = sans.slice(0, -1);
+    const lastSan = sans[sans.length - 1];
+    const brd = boardFromSans(prev);
+    const col = prev.length % 2 === 0 ? "w" : "b";
+    const src = sanSrc(brd, lastSan, col);
+    const to = src && src.to ? src.to : null;
+    if (!to) { setLastQ(null); return; }
+    const pnode = snapNode(prev);
+    const sm = pnode ? pnode.moves.find((m) => stripSuffix(m.san) === stripSuffix(lastSan)) : null;
+    setLastQ({ to, kind: sm ? (sm.book ? "book" : "good") : "pending" }); // 즉시 폴백(스냅샷 기준)
+    let cancelled = false;
+    if (liveOn && engine.status === "ready") {
+      evalMoveKind(prev, lastSan).then((k) => { if (!cancelled && k) setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); });
+    }
+    return () => { cancelled = true; };
+  }, [key, liveOn, engine.status]);
 
   const go = useCallback((san, isExtra) => {
     if (isExtra) setExtra((prev) => { const cur = prev[key] || []; if (cur.includes(san)) return prev; return { ...prev, [key]: [...cur, san] }; });
@@ -1736,12 +1798,31 @@ function CollectionTab({ unlocked, liveOn, contentVer, chesscom }) {
 /* ============================================================ 퍼즐 탭 ============================================================ */
 const PIECE_KOR = { K: "킹", Q: "퀸", R: "룩", B: "비숍", N: "나이트", P: "폰" };
 const THEME_LABEL = { sacrifice: "기물 희생하기", advantage: "우위 점하기", punish: "실수 응징하기" };
-function PuzzleSolver({ puzzle, onClose, onSolved }) {
+// (UI4) 퍼즐 이름 규칙: 직전 수들 중 '가장 마지막으로 이름이 있는 수'의 오프닝 이름을 기준으로 짓는다.
+function lastNamedOpening(sans) {
+  let nm = null;
+  for (let i = 1; i <= sans.length; i++) { const nd = snapNode(sans.slice(0, i)); if (nd && nd.opening && nd.opening.name) nm = nd.opening.name; }
+  return nm;
+}
+function puzzleName(theme, setupSans, mistakeSan) {
+  const base = lastNamedOpening(setupSans) || "오프닝";
+  if (theme === "sacrifice") return base + "에서 탁월한 수 찾기";
+  if (theme === "advantage") return base + "에서 우위 점하기";
+  return base + "에서 " + moveNumber(setupSans.length) + stripSuffix(mistakeSan || "") + " 응징하기";
+}
+// (UX6) 퍼즐 고유번호: id로부터 안정적으로 도출(같은 위치·수 → 같은 번호, 사용자 간 공통)
+function puzzleNo(id) { let h = 2166136261; const s = String(id); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) % 900000 + 100000; } // 6자리
+// (UX6) 전역 풀이수: Supabase RPC 'puzzle_solve'(증가, 새 카운트 반환) / 테이블 'puzzle_stats' 조회. 미설정·미생성 시 무해하게 비활성.
+async function puzzleSolveInc(no) { if (!SB_ON) return null; try { const r = await sbRpc("puzzle_solve", { p_no: no }); return typeof r === "number" ? r : (r && r.solves) || null; } catch { return null; } }
+async function puzzleSolveCounts() { if (!SB_ON) return {}; try { const rows = await sbSelect("puzzle_stats?select=no,solves"); const m = {}; (rows || []).forEach((x) => { m[x.no] = x.solves; }); return m; } catch { return {}; } }
+function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
   const theme = puzzle.theme || "punish";
   const setup = [...puzzle.setupSans, puzzle.mistakeSan];
   const userColor = setup.length % 2 === 0 ? "w" : "b";   // 보드 방향 고정(상대 응수 때도 반전하지 않음)
   const boardSize = useBoardSize(380);
   const [idx, setIdx] = useState(0);
+  const [intro, setIntro] = useState(true);   // (UX7) 진입 시 직전 수를 컴퓨터가 둔 것처럼 재생
+  useEffect(() => { setIntro(true); const t = setTimeout(() => setIntro(false), 2400); return () => clearTimeout(t); }, [puzzle.id]);
   const [sel, setSel] = useState(null);
   const [wrong, setWrong] = useState(null);     // { board, at:[r,c] }
   const [reply, setReply] = useState(null);      // { sans, san }  상대 응수 애니메이션
@@ -1750,7 +1831,7 @@ function PuzzleSolver({ puzzle, onClose, onSolved }) {
   const color = cur.length % 2 === 0 ? "w" : "b";
   const ep = epTarget(cur);
   const done = idx >= puzzle.solution.length;
-  const userToMove = !done && idx % 2 === 0 && !wrong && !reply;
+  const userToMove = !done && idx % 2 === 0 && !wrong && !reply && !intro;
   useEffect(() => { if (done && onSolved) onSolved(puzzle.id); }, [done]);
   // 상대(컴퓨터) 응수: 보드 반전 없이 수 애니메이션을 보여준 뒤 진행
   useEffect(() => {
@@ -1778,10 +1859,11 @@ function PuzzleSolver({ puzzle, onClose, onSolved }) {
     return `상대의 이 수는 기물을 잃거나 포지션이 나빠지는 실수예요. 힌트: ${pk || "기물"}을(를) 움직여 ${dest || "약점"}을(를) 노리세요.`;
   }, [puzzle.id]);
   // (UX2) 마스코트 캐릭터는 둘 차례(백=MILKU, 흑=KOKOA), 표정은 풀이 상태에 따름
-  const pmEmotion = done ? "celebrate" : wrong ? "angry" : reply ? "wink"
+  const pmEmotion = intro ? "think" : done ? "celebrate" : wrong ? "angry" : reply ? "wink"
     : theme === "sacrifice" ? "great" : theme === "advantage" ? "think" : "surprise";
   const pm = [color === "w" ? "milku" : "kokoa", pmEmotion];
-  const prompt = done ? "✓ 완성! 모든 수를 찾았어요."
+  const prompt = intro ? "직전 수를 재생하고 있어요 — 곧 당신 차례예요."
+    : done ? "✓ 완성! 모든 수를 찾았어요."
     : wrong ? "✕ 다른 수예요. ‘재시도’를 눌러 다시 풀어 보세요."
       : reply ? "상대 응수 중…"
         : theme === "sacrifice" ? "당신 차례 — 기물을 희생하는 탁월한 수를 두세요."
@@ -1793,12 +1875,15 @@ function PuzzleSolver({ puzzle, onClose, onSolved }) {
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 10.5, fontWeight: 800, color: T.brass }}>{THEME_LABEL[theme]}</div>
           <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{puzzle.name}</div>
+          <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 2 }}>#{puzzleNo(puzzle.id)}{solveCount != null && solveCount > 0 ? " · " + fmtFull(solveCount) + "명이 풀었습니다!" : ""}</div>
         </div>
         <button onClick={onClose} aria-label="닫기" className="press" style={{ flexShrink: 0, width: 30, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontSize: 15, fontWeight: 800, lineHeight: 1, cursor: "pointer" }}>✕</button>
       </div>
       <div style={{ marginBottom: 10 }}><MascotBubble text={done ? "훌륭해요! 다음 퍼즐도 도전해 보세요." : hint} ply={0} mascot={pm[0]} emotion={pm[1]} /></div>
-      {reply
-        ? <AnimatedMove sans={reply.sans} san={reply.san} size={boardSize} loopMs={0} flip={userColor === "b"} />
+      {intro
+        ? <AnimatedMove sans={puzzle.setupSans} san={puzzle.mistakeSan} size={boardSize} loopMs={1200} flip={userColor === "b"} />
+        : reply
+          ? <AnimatedMove sans={reply.sans} san={reply.san} size={boardSize} loopMs={0} flip={userColor === "b"} />
         : <Board board={wrong ? wrong.board : board} flip={userColor === "b"} size={boardSize} selected={sel} wrongAt={wrong ? wrong.at : null} onSquareClick={onSquareClick} onPieceDrag={(sq) => { const p = board[sq[0]][sq[1]]; if (userToMove && p && p.c === color) setSel(sq); }} onDrop={(sq) => { if (userToMove && sel) tryUserMove(sel, sq); }} onMove={(from, to) => { if (userToMove) tryUserMove(from, to); }} legalTargets={userToMove && sel ? legalDests(board, sel[0], sel[1], color, ep) : []} showEval={false} interactive={userToMove} />}
       <p style={{ fontSize: 13, color: done ? T.best : wrong ? T.blunder : T.ink, fontWeight: 700, marginTop: 12, textAlign: "center" }}>{prompt}</p>
       <div className="flex justify-center gap-2" style={{ marginTop: 10 }}>
@@ -1808,28 +1893,51 @@ function PuzzleSolver({ puzzle, onClose, onSolved }) {
     </div>
   );
 }
-function PuzzleCard({ p, isSolved, onClick }) {
+function PuzzleCard({ p, isSolved, onClick, onDelete, solveCount }) {
+  const setupLen = (p.setupSans ? p.setupSans.length : 0) + 1;
+  const flip = setupLen % 2 !== 0; // userColor 흑이면 반전
+  const hasPreview = p.setupSans && p.mistakeSan;
   return (
-    <button onClick={onClick} className="press text-left" style={{ borderRadius: 14, padding: 14, background: isSolved ? "linear-gradient(180deg,#E7F0DC,#D2E2BC)" : "linear-gradient(180deg," + T.ivoryHi + ",#E2D2B2)", boxShadow: "0 4px 0 " + (isSolved ? "#9DB97E" : "#B59A6E"), border: "1px solid " + (isSolved ? "#A9C589" : "#CDB98E"), cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", minHeight: 124, height: "100%" }}>
-      <div className="flex items-center justify-between" style={{ flexShrink: 0 }}><div style={{ fontSize: 11, color: isSolved ? T.best : T.brass, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "70%" }}>{p.opening}</div>{isSolved && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: T.best, fontSize: 11, fontWeight: 800, flexShrink: 0 }}><Check size={14} /> 해결됨</span>}</div>
-      <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginTop: 4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.3 }}>{p.name}</div>
-      <div style={{ fontSize: 11, color: T.inkSoft, marginTop: "auto", paddingTop: 8 }}>{THEME_LABEL[p.theme || "punish"]} · {Math.ceil(p.solution.length / 2) || 1}수 · {isSolved ? "다시 풀기" : "풀어보기"} ›</div>
-    </button>
+    <div onClick={onClick} className="press text-left" style={{ borderRadius: 14, padding: 12, background: isSolved ? "linear-gradient(180deg,#E7F0DC,#D2E2BC)" : "linear-gradient(180deg," + T.ivoryHi + ",#E2D2B2)", boxShadow: "0 4px 0 " + (isSolved ? "#9DB97E" : "#B59A6E"), border: "1px solid " + (isSolved ? "#A9C589" : "#CDB98E"), cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", minHeight: 124, height: "100%" }}>
+      {onDelete && <button onClick={(e) => { e.stopPropagation(); onDelete(p.id); }} aria-label="삭제" className="press" style={{ position: "absolute", top: 6, right: 6, zIndex: 10, width: 24, height: 24, borderRadius: 7, background: "rgba(40,24,12,.78)", color: "#F4C8C8", border: "1px solid #000", fontSize: 13, fontWeight: 800, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>✕</button>}
+      {hasPreview && <div style={{ marginBottom: 8 }}><AnimatedMove sans={p.setupSans} san={p.mistakeSan} size={116} loopMs={2400} flip={flip} /></div>}
+      <div className="flex items-center justify-between" style={{ flexShrink: 0 }}><div style={{ fontSize: 11, color: isSolved ? T.best : T.brass, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "62%" }}>{p.opening}</div>{isSolved && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: T.best, fontSize: 11, fontWeight: 800, flexShrink: 0, marginRight: 22 }}><Check size={14} /> 해결됨</span>}</div>
+      <div style={{ fontSize: 13.5, fontWeight: 800, color: T.ink, marginTop: 4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.3 }}>{p.name}</div>
+      <div className="flex items-center justify-between" style={{ marginTop: "auto", paddingTop: 8, gap: 6 }}>
+        <span style={{ fontSize: 10.5, color: T.inkSoft }}>{THEME_LABEL[p.theme || "punish"]} · {Math.ceil(p.solution.length / 2) || 1}수</span>
+        <span style={{ fontSize: 10, color: T.brass, fontFamily: "ui-monospace,monospace", fontWeight: 700 }}>#{puzzleNo(p.id)}</span>
+      </div>
+      {solveCount != null && solveCount > 0 && <div style={{ fontSize: 10.5, color: "#2E6E2E", fontWeight: 700, marginTop: 3 }}>{fmtFull(solveCount)}명이 풀었습니다!</div>}
+    </div>
   );
 }
-function PuzzleTab({ puzzles, solved, onSolved }) {
+function PuzzleTab({ puzzles, solved, onSolved, onDeletePuzzle, solveCounts }) {
   const [active, setActive] = useState(null);
   const [filter, setFilter] = useState("all");
-  if (active) return <PuzzleSolver puzzle={active} onClose={() => setActive(null)} onSolved={onSolved} />;
+  const [numInput, setNumInput] = useState("");
+  const [numMsg, setNumMsg] = useState("");
+  if (active) return <PuzzleSolver puzzle={active} onClose={() => setActive(null)} onSolved={onSolved} solveCount={solveCounts ? solveCounts[puzzleNo(active.id)] : null} />;
   const themed = filter === "all" ? puzzles : puzzles.filter((p) => (p.theme || "punish") === filter);
-  const open = themed.filter((p) => !solved.has(p.id));
-  const cleared = themed.filter((p) => solved.has(p.id));
+  const byOpening = (a, b) => (a.opening || "").localeCompare(b.opening || "") || (a.name || "").localeCompare(b.name || ""); // (UX4) 오프닝순 정렬
+  const open = themed.filter((p) => !solved.has(p.id)).sort(byOpening);
+  const cleared = themed.filter((p) => solved.has(p.id)).sort(byOpening);
   const chips = [["all", "전체"], ["sacrifice", "기물 희생하기"], ["advantage", "우위 점하기"], ["punish", "실수 응징하기"]];
   const count = (k) => (k === "all" ? puzzles.length : puzzles.filter((p) => (p.theme || "punish") === k).length);
+  const solveByNumber = () => {
+    const n = parseInt(numInput, 10);
+    if (!Number.isFinite(n)) { setNumMsg("번호를 입력하세요."); return; }
+    const hit = puzzles.find((p) => puzzleNo(p.id) === n);
+    if (hit) { setNumMsg(""); setNumInput(""); setActive(hit); } else setNumMsg("보유한 퍼즐 중 #" + n + " 번호가 없습니다.");
+  };
   return (
     <div>
       <div className="flex items-center gap-2"><Mascot name="kokoa" emotion="celebrate" size={48} /><h2 style={{ fontSize: 18, fontWeight: 800, color: T.ivoryHi }}>퍼즐</h2></div>
       <p style={{ fontSize: 13, color: T.inkSoft, margin: "6px 0 12px" }}>학습 탭에서 탁월한 수·부정확한 수·실수에 들어가면 기물 희생·우위 점하기·실수 응징 퍼즐이 자동 저장됩니다. ({cleared.length}/{themed.length} 해결)</p>
+      <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+        <input value={numInput} onChange={(e) => setNumInput(e.target.value.replace(/[^0-9]/g, ""))} onKeyDown={(e) => e.key === "Enter" && solveByNumber()} inputMode="numeric" placeholder="퍼즐 번호로 풀기 (예: 123456)" style={{ flex: 1, minWidth: 0, padding: "8px 11px", borderRadius: 9, border: "1px solid #5A4630", background: "rgba(0,0,0,.25)", color: T.ivoryHi, fontFamily: "ui-monospace,monospace", fontSize: 13 }} />
+        <button onClick={solveByNumber} className="press" style={{ padding: "8px 14px", borderRadius: 9, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", fontWeight: 800, border: "none", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>풀기</button>
+      </div>
+      {numMsg && <p style={{ fontSize: 11.5, color: T.blunder, margin: "-4px 0 10px" }}>{numMsg}</p>}
       <div className="flex flex-wrap gap-2" style={{ marginBottom: 14 }}>
         {chips.map(([k, lb]) => { const on = filter === k; return (
           <button key={k} onClick={() => setFilter(k)} className="press" style={{ fontSize: 12, fontWeight: 800, padding: "6px 12px", borderRadius: 999, border: "1px solid " + (on ? T.brass : "#5A4630"), background: on ? "linear-gradient(180deg," + T.brass + ",#A8842F)" : "transparent", color: on ? "#241509" : T.brassHi, cursor: "pointer" }}>{lb} <span style={{ opacity: .7 }}>{count(k)}</span></button>
@@ -1837,8 +1945,8 @@ function PuzzleTab({ puzzles, solved, onSolved }) {
       </div>
       {themed.length === 0 ? <div style={{ background: T.paper, border: "1px dashed #C9B58C", borderRadius: 12, padding: 20, textAlign: "center", color: T.inkSoft, fontSize: 13 }}><div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><Mascot name="kokoa" emotion="sleep" size={60} /></div>이 테마의 퍼즐이 아직 없어요.</div>
         : <div>
-            {open.length > 0 && <div style={{ marginBottom: 16 }}><div style={{ fontSize: 12.5, fontWeight: 800, color: T.brassHi, marginBottom: 8 }}>미해결 ({open.length})</div><div className="grid sm:grid-cols-2 gap-3">{open.map((p) => <PuzzleCard key={p.id} p={p} isSolved={false} onClick={() => setActive(p)} />)}</div></div>}
-            {cleared.length > 0 && <div><div style={{ fontSize: 12.5, fontWeight: 800, color: T.best, marginBottom: 8 }}>해결된 퍼즐 ({cleared.length})</div><div className="grid sm:grid-cols-2 gap-3">{cleared.map((p) => <PuzzleCard key={p.id} p={p} isSolved={true} onClick={() => setActive(p)} />)}</div></div>}
+            {open.length > 0 && <div style={{ marginBottom: 16 }}><div style={{ fontSize: 12.5, fontWeight: 800, color: T.brassHi, marginBottom: 8 }}>미해결 ({open.length})</div><div className="grid sm:grid-cols-2 gap-3">{open.map((p) => <PuzzleCard key={p.id} p={p} isSolved={false} onClick={() => setActive(p)} onDelete={onDeletePuzzle} solveCount={solveCounts ? solveCounts[puzzleNo(p.id)] : null} />)}</div></div>}
+            {cleared.length > 0 && <div><div style={{ fontSize: 12.5, fontWeight: 800, color: T.best, marginBottom: 8 }}>해결된 퍼즐 ({cleared.length})</div><div className="grid sm:grid-cols-2 gap-3">{cleared.map((p) => <PuzzleCard key={p.id} p={p} isSolved={true} onClick={() => setActive(p)} onDelete={onDeletePuzzle} solveCount={solveCounts ? solveCounts[puzzleNo(p.id)] : null} />)}</div></div>}
           </div>}
     </div>
   );
@@ -2186,6 +2294,8 @@ export default function App() {
   const [unlocked, setUnlocked] = useState(new Set());
   const [newUnlocks, setNewUnlocks] = useState(0);
   const [puzzles, setPuzzles] = useState([]);
+  const [deletedPuzzles, setDeletedPuzzles] = useState(new Set()); // (UX5) 삭제한 퍼즐(자동 재생성 방지)
+  const [solveCounts, setSolveCounts] = useState({});              // (UX6) 번호별 전역 풀이수
   const [profile, setProfile] = useState({ nickname: "", chesscom: "" });
   const [loaded, setLoaded] = useState(false);
   const [liveOn, setLiveOn] = useState(true);
@@ -2215,18 +2325,20 @@ export default function App() {
   const openAuth = (mode) => { setAuthMode(mode); setAuthOpen(true); };
   useEffect(() => { (async () => {
     const raw = await store.get("chess_state_v5");
-    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); if (typeof d.liveOn === "boolean") setLiveOn(d.liveOn); if (d.user && d.userHash) { setUser(d.user); setUserHash(d.userHash); try { const r = await acctLogin(d.user, d.userHash); if (r && r.ok && r.data) { const pr = r.data.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (r.data.chesscom) setProfile((p) => ({ ...p, chesscom: r.data.chesscom })); } } catch { } } } catch { } }
+    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); if (typeof d.liveOn === "boolean") setLiveOn(d.liveOn); if (d.user && d.userHash) { setUser(d.user); setUserHash(d.userHash); try { const r = await acctLogin(d.user, d.userHash); if (r && r.ok && r.data) { const pr = r.data.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (r.data.chesscom) setProfile((p) => ({ ...p, chesscom: r.data.chesscom })); } } catch { } } } catch { } }
+    try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
-  useEffect(() => { if (loaded) store.set("chess_state_v5", JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], liveOn, user, userHash })); }, [unlocked, profile, puzzles, solved, liveOn, loaded, user, userHash]);
-  useEffect(() => { if (loaded && user && userHash) acctSave(user, userHash, { progress: { unlocked: [...unlocked], puzzles, solved: [...solved] }, chesscom: profile.chesscom || "" }); }, [unlocked, puzzles, solved, user, userHash, loaded, profile.chesscom]);
+  useEffect(() => { if (loaded) store.set("chess_state_v5", JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], liveOn, user, userHash })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, liveOn, loaded, user, userHash]);
+  useEffect(() => { if (loaded && user && userHash) acctSave(user, userHash, { progress: { unlocked: [...unlocked], puzzles, solved: [...solved], deleted: [...deletedPuzzles] }, chesscom: profile.chesscom || "" }); }, [unlocked, puzzles, solved, deletedPuzzles, user, userHash, loaded, profile.chesscom]);
 
   const onAuth = useCallback((id, data, hash) => { setUser(id); setUserHash(hash || null); const pr = (data && data.progress) || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (data && data.chesscom) setProfile((p) => ({ ...p, chesscom: data.chesscom })); setAuthOpen(false); }, []);
   const logout = useCallback(() => { setUser(null); setUserHash(null); setDevOn(false); setConfirmLogout(false); }, []);
   const unlockOpening = useCallback((keyStr) => { let isNew = false; setUnlocked((p) => { if (p.has(keyStr)) return p; isNew = true; const n = new Set(p); const parts = keyStr.split(" ").filter(Boolean); for (let i = 1; i <= parts.length; i++) n.add(parts.slice(0, i).join(" ")); return n; }); if (isNew) setNewUnlocks((n) => n + 1); return isNew; }, []);
   const onLearned = useCallback((name) => { setToast({ name }); setTimeout(() => setToast(null), 2600); }, []);
-  const onSavePuzzle = useCallback((pz) => setPuzzles((prev) => prev.some((x) => x.id === pz.id) ? prev : [...prev, pz]), []);
-  const onSolved = useCallback((id) => setSolved((p) => { if (p.has(id)) return p; const n = new Set(p); n.add(id); return n; }), []);
+  const onSavePuzzle = useCallback((pz) => setPuzzles((prev) => (deletedPuzzles.has(pz.id) || prev.some((x) => x.id === pz.id)) ? prev : [...prev, pz]), [deletedPuzzles]);
+  const onDeletePuzzle = useCallback((id) => { setPuzzles((prev) => prev.filter((x) => x.id !== id)); setDeletedPuzzles((p) => { const n = new Set(p); n.add(id); return n; }); setSolved((p) => { if (!p.has(id)) return p; const n = new Set(p); n.delete(id); return n; }); }, []);
+  const onSolved = useCallback((id) => { setSolved((p) => { if (p.has(id)) return p; const n = new Set(p); n.add(id); return n; }); const no = puzzleNo(id); puzzleSolveInc(no).then((c) => { if (c != null) setSolveCounts((m) => ({ ...m, [no]: c })); }); }, []);
   const switchTab = (k) => { if (k === "dex") setNewUnlocks(0); setNavNonce((n) => n + 1); setTab(k); };
 
   return (
@@ -2275,7 +2387,7 @@ export default function App() {
       <main style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 18px 110px" }}>
         {tab === "learn" && <LearnTab engine={engine} liveOn={liveOn} onFocusActive={setFocusActive} unlockOpening={unlockOpening} onLearned={onLearned} chesscom={chesscom} onSavePuzzle={onSavePuzzle} contentVer={contentVer} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} sans={learnSans} setSans={setLearnSans} future={learnFuture} setFuture={setLearnFuture} extra={learnExtra} setExtra={setLearnExtra} />}
         {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} />}
-        {tab === "puzzle" && <PuzzleTab key={"puzzle-" + navNonce} puzzles={puzzles} solved={solved} onSolved={onSolved} />}
+        {tab === "puzzle" && <PuzzleTab key={"puzzle-" + navNonce} puzzles={puzzles} solved={solved} onSolved={onSolved} onDeletePuzzle={onDeletePuzzle} solveCounts={solveCounts} />}
         {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} />}
       </main>
 
