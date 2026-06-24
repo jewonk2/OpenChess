@@ -1781,7 +1781,7 @@ function CollectionTab({ unlocked, unlockAll, liveOn, contentVer, chesscom, earn
                   <span style={{ fontSize: 13.5, fontWeight: 800, color: T.ivoryHi }}>{fam.label}</span>
                   <span style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(n)}회 해결</span>
                 </div>
-                <div className="grid sm:grid-cols-2 gap-2">
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {TITLE_TIERS.map((t) => { const id = titleId(fam.key, t.rank); return (
                     <TitleBadge key={id} id={id} earned={earned.has(id)} equipped={currentTitle === id} progress={n} onEquip={onEquipTitle} />
                   ); })}
@@ -1871,33 +1871,59 @@ function familyCounts(puzzles, solved) {
 function achievableTitles(counts) {
   const out = new Set(); for (const fam of TITLE_OPENINGS) { const n = counts[fam.key] || 0; for (const t of TITLE_TIERS) if (n >= t.min) out.add(titleId(fam.key, t.rank)); } return out;
 }
+const TITLE_TIER_STYLE = {
+  C:  { bg: ["#8C9C1E", "#697610"], label: "#EAF0A2" },   // Beginner · olive
+  B:  { bg: ["#2F8B3D", "#1B6A2A"], label: "#BBEAB5" },   // Intermediate · green
+  A:  { bg: ["#12612C", "#0A3D1D"], label: "#73D073" },   // Advanced · dark green
+  S:  { bg: ["#1566BA", "#0B4184"], label: "#62B0F4" },   // Master · blue
+  SS: { bg: ["#1BBAA8", "#129A8C"], label: "#0B4F47" },   // GrandMaster · teal
+};
+function TitleSym({ q, size, color }) {
+  if (q === "good") return <Check size={size} strokeWidth={3.4} color={color} />;
+  if (q === "excellent") return <ThumbsUp size={size} strokeWidth={2.4} color={color} fill={color} />;
+  if (q === "best") return <Star size={size} strokeWidth={2} color={color} fill={color} />;
+  if (q === "only") return <span style={{ fontSize: size, fontWeight: 900, lineHeight: 1, color }}>!</span>;
+  return <span style={{ fontSize: size * 0.82, fontWeight: 900, lineHeight: 1, letterSpacing: -1, color }}>!!</span>;
+}
 function TitleBadge({ id, earned = true, equipped = false, progress = null, onEquip, compact = false }) {
   const [famKey, rank] = id.split(":");
   const fam = TITLE_OPENINGS.find((f) => f.key === famKey); const tier = TITLE_TIERS.find((t) => t.rank === rank);
   if (!fam || !tier) return null;
-  const col = QCOLOR[tier.q]; const sym = QSYM[tier.q]; const tierIdx = TITLE_TIERS.indexOf(tier); // 0..4 밀도
-  const gloss = earned ? 1 : 0.32;
+  const st = TITLE_TIER_STYLE[rank] || TITLE_TIER_STYLE.C; const tierIdx = TITLE_TIERS.indexOf(tier);
+  const H = compact ? 54 : 66; const VB_W = 360; const deco = "#FFFFFF";
+  // 우측 기하학 패턴 — 등급이 높을수록 촘촘 (결정적 생성)
+  const shapes = []; let seed = (tierIdx + 1) * 9973;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const N = 4 + tierIdx * 4;
+  for (let i = 0; i < N; i++) {
+    const x = 150 + rnd() * 195, y = 8 + rnd() * (H - 16), sz = 4 + rnd() * 9, op = 0.4 + rnd() * 0.5, t = rnd();
+    if (t < 0.55) shapes.push(<rect key={i} x={x} y={y} width={sz} height={sz} transform={`rotate(45 ${x + sz / 2} ${y + sz / 2})`} fill={rnd() > 0.55 ? deco : "none"} stroke={deco} strokeWidth="1.4" opacity={op} />);
+    else shapes.push(<line key={i} x1={x} y1={y + sz} x2={x + sz * 1.8} y2={y - sz * 0.8} stroke={deco} strokeWidth="2.4" opacity={op} strokeLinecap="round" />);
+  }
+  if (tierIdx >= 3) shapes.push(<rect key="big" x={262} y={H / 2 - 15} width={30} height={30} transform={`rotate(45 277 ${H / 2})`} fill={deco} opacity={tierIdx === 4 ? 0.6 : 0.4} />);
+  // 좌측 점 격자
+  const dots = []; for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) dots.push(<circle key={"d" + r + c} cx={10 + c * 7} cy={8 + r * 7} r="1.5" fill={deco} opacity="0.85" />);
+  // 좌측 하단 삼각형
+  const tris = []; for (let i = 0; i < 6; i++) { const tx = 8 + (i % 3) * 9, ty = H - 22 + Math.floor(i / 3) * 9; tris.push(<path key={"t" + i} d={`M${tx} ${ty + 6} L${tx + 4} ${ty} L${tx + 8} ${ty + 6} Z`} fill={deco} opacity="0.8" />); }
+  const clip = "polygon(0 0, calc(100% - 13px) 0, 100% 13px, 100% 100%, 13px 100%, 0 calc(100% - 13px))";
+  const clickable = earned && onEquip;
   return (
-    <div style={{ position: "relative", borderRadius: 12, padding: compact ? "8px 10px" : 12, overflow: "hidden", border: "1px solid " + (equipped ? col : "rgba(0,0,0,.25)"), background: earned ? "linear-gradient(135deg," + T.ebony2 + "," + T.ink + ")" : "linear-gradient(135deg,#2A2018,#211913)", boxShadow: equipped ? "0 0 0 2px " + col + ", 0 6px 14px -8px rgba(0,0,0,.6)" : "inset 0 1px 0 rgba(255,255,255,.05)", opacity: earned ? 1 : 0.92 }}>
-      {/* UX-8 기하학적 밀도: 등급이 높을수록 빗금·도형이 촘촘 */}
-      <div style={{ position: "absolute", inset: 0, pointerEvents: "none", opacity: 0.16 * gloss, backgroundImage: "repeating-linear-gradient(" + (45 + tierIdx * 15) + "deg," + col + " 0," + col + " 1.5px,transparent 1.5px,transparent " + (16 - tierIdx * 2.4) + "px)" }} />
-      {Array.from({ length: tierIdx + 1 }).map((_, i) => (
-        <div key={i} style={{ position: "absolute", top: -8 - i * 6, right: -8 - i * 6, width: 26 + i * 8, height: 26 + i * 8, border: "1.5px solid " + col, opacity: 0.25 * gloss, transform: "rotate(45deg)", borderRadius: 3, pointerEvents: "none" }} />
-      ))}
-      <div className="flex items-center gap-3" style={{ position: "relative" }}>
-        <div style={{ flexShrink: 0, width: compact ? 38 : 46, height: compact ? 38 : 46, borderRadius: 11, background: earned ? "radial-gradient(circle at 35% 30%," + col + ",rgba(0,0,0,.4))" : "rgba(255,255,255,.06)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1.5px solid " + (earned ? col : "rgba(255,255,255,.15)"), color: earned ? "#fff" : "#7A6A52" }}>
-          <span style={{ fontSize: compact ? 13 : 16, fontWeight: 900, lineHeight: 1 }}>{sym}</span>
-          <span style={{ fontSize: 9, fontWeight: 900, letterSpacing: ".06em", marginTop: 1 }}>{tier.rank}</span>
-        </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: compact ? 12.5 : 13.5, fontWeight: 800, color: earned ? T.ivoryHi : "#8A7458", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{fam.label}</div>
-          <div style={{ fontSize: 10.5, fontWeight: 800, color: earned ? col : "#7A6A52", marginTop: 2 }}>{tier.suffix} · {QLABEL[tier.q].replace(" 수", "")}</div>
-          {!earned && progress != null && <div style={{ fontSize: 9.5, color: T.inkSoft, marginTop: 3, fontFamily: "ui-monospace,monospace" }}>{fmtFull(Math.min(progress, tier.min))}/{fmtFull(tier.min)} 해결</div>}
-        </div>
-        {earned && onEquip && (equipped
-          ? <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 800, color: col, border: "1px solid " + col, borderRadius: 7, padding: "3px 8px" }}>장착됨</span>
-          : <button onClick={() => onEquip(id)} className="press" style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 800, color: "#241509", background: col, border: "none", borderRadius: 7, padding: "4px 10px", cursor: "pointer" }}>장착</button>)}
+    <div onClick={clickable ? () => onEquip(id) : undefined} className={clickable ? "press" : undefined}
+      style={{ position: "relative", height: H, width: "100%", clipPath: clip, background: "linear-gradient(120deg," + st.bg[0] + "," + st.bg[1] + ")", cursor: clickable ? "pointer" : "default", filter: earned ? "none" : "grayscale(1)", opacity: earned ? 1 : 0.5, boxShadow: equipped ? "inset 0 0 0 2.5px rgba(255,255,255,.95)" : "inset 0 1px 0 rgba(255,255,255,.18)", display: "flex", alignItems: "center" }}>
+      <svg width="100%" height="100%" viewBox={`0 0 ${VB_W} ${H}`} preserveAspectRatio="none" style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>{dots}{tris}{shapes}</svg>
+      {/* 좌측 다이아몬드 + 기호 */}
+      <div style={{ position: "relative", flexShrink: 0, width: H, height: H, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: H * 0.6, height: H * 0.6, transform: "rotate(45deg)", border: "2.4px solid " + deco, borderRadius: 4 }} />
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: deco }}><TitleSym q={tier.q} size={compact ? 16 : 20} color={deco} /></div>
       </div>
+      {/* 오프닝 | 등급 */}
+      <div style={{ position: "relative", display: "flex", alignItems: "center", gap: compact ? 8 : 11, minWidth: 0, flex: 1, paddingRight: 12 }}>
+        <span style={{ fontSize: compact ? 14 : 18, fontWeight: 900, fontStyle: "italic", letterSpacing: "0.5px", color: "#fff", textTransform: "uppercase", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: "0 1px 2px rgba(0,0,0,.25)" }}>{fam.label}</span>
+        <span style={{ width: 2, height: compact ? 18 : 24, background: "rgba(255,255,255,.55)", flexShrink: 0 }} />
+        <span style={{ fontSize: compact ? 10.5 : 12.5, fontWeight: 900, letterSpacing: "1px", color: st.label, textTransform: "uppercase", whiteSpace: "nowrap", flexShrink: 0 }}>{tier.suffix}</span>
+      </div>
+      {equipped && <span style={{ position: "absolute", right: 14, bottom: 5, fontSize: 9.5, fontWeight: 900, letterSpacing: ".05em", color: "#fff", background: "rgba(0,0,0,.28)", borderRadius: 5, padding: "1px 6px", pointerEvents: "none" }}>장착됨</span>}
+      {!earned && progress != null && <span style={{ position: "absolute", right: 14, bottom: 5, fontSize: 9.5, fontWeight: 800, fontFamily: "ui-monospace,monospace", color: "#fff", background: "rgba(0,0,0,.4)", borderRadius: 5, padding: "1px 6px", pointerEvents: "none" }}>{fmtFull(Math.min(progress, tier.min))}/{fmtFull(tier.min)}</span>}
     </div>
   );
 }
@@ -2102,7 +2128,7 @@ function ProfileEditor({ profile, setProfile, earnedTitles, currentTitle, onEqui
       </div>
       <div style={lab}>칭호 장착</div>
       {earned.length === 0 ? <div style={{ fontSize: 12, color: T.inkSoft }}>아직 획득한 칭호가 없습니다. 퍼즐을 풀어 칭호를 획득하세요.</div>
-        : <div className="grid sm:grid-cols-2 gap-2">{earned.map((id) => <TitleBadge key={id} id={id} earned equipped={currentTitle === id} onEquip={onEquipTitle} compact />)}</div>}
+        : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{earned.map((id) => <TitleBadge key={id} id={id} earned equipped={currentTitle === id} onEquip={onEquipTitle} compact />)}</div>}
     </div>
   );
 }
