@@ -278,7 +278,7 @@ async function fetchLichess(sans, master) {
   const posTotal = (j.white || 0) + (j.draws || 0) + (j.black || 0);
   const moves = (j.moves || []).map((m) => {
     const tot = (m.white || 0) + (m.draws || 0) + (m.black || 0);
-    return { san: m.san, games: tot, adopt: posTotal ? +(100 * tot / posTotal).toFixed(1) : 0, eco: m.opening ? m.opening.eco : null, name: m.opening ? m.opening.name : null, wdl: { w: m.white || 0, d: m.draws || 0, b: m.black || 0 } };
+    return { san: m.san, games: tot, adopt: posTotal ? +(100 * tot / posTotal).toFixed(1) : 0, name: m.opening ? m.opening.name : null, wdl: { w: m.white || 0, d: m.draws || 0, b: m.black || 0 } };
   });
   const data = { posTotal, opening: j.opening || null, moves, wdl: { w: j.white || 0, d: j.draws || 0, b: j.black || 0 }, master: !!master };
   _lichessCache.set(url, { t: Date.now(), data });
@@ -736,7 +736,7 @@ function assignTiers(moves, ply, board, keyStr) {
     const mv = moverEval(m, ply);
     const loss = (mv == null || best == null) ? null : best - mv;
     const unbooked = keyStr != null && isUnbooked(keyStr, m.san);
-    const isBook = !unbooked && !!m.eco && (loss == null || loss <= 60);
+    const isBook = !unbooked && !!m.book;   // 이론 = 큐레이션 트리(스냅샷)에 있는 수 (ECO 미사용)
     if (isBook) return { ...m, kind: "book", book: true };
     if (mv == null || best == null) return { ...m, kind: hasRealEval(m) ? "good" : "pending", book: false };
     let kind = tierOf(loss);
@@ -1062,7 +1062,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
         const snapBy = Object.fromEntries(base.map((m) => [stripSuffix(m.san), m]));
         const masterAdoptBy = master ? Object.fromEntries(master.moves.map((m) => [stripSuffix(m.san), m.adopt])) : {};
         const masterTopSans = master ? master.moves.slice(0, 3).map((m) => stripSuffix(m.san)) : [];
-        const mk = (l) => { const s = snapBy[stripSuffix(l.san)] || {}; const unb = isUnbooked(key, l.san); return { san: l.san, adopt: l.adopt, games: l.games, wdl: l.wdl, book: !unb && !!s.book, eco: l.eco || s.eco, name: (s.name || (l.eco ? l.name : undefined)), kw: s.kw, evalCp: s.evalCp, isMain: s.isMain, masterAdopt: masterAdoptBy[stripSuffix(l.san)] ?? null, masterTop: masterTopSans.includes(stripSuffix(l.san)) }; };
+        const mk = (l) => { const s = snapBy[stripSuffix(l.san)] || {}; const unb = isUnbooked(key, l.san); return { san: l.san, adopt: l.adopt, games: l.games, wdl: l.wdl, book: !unb && !!s.book, name: s.name, kw: s.kw, evalCp: s.evalCp, isMain: s.isMain, masterAdopt: masterAdoptBy[stripSuffix(l.san)] ?? null, masterTop: masterTopSans.includes(stripSuffix(l.san)) }; };
         const all = active.moves.map(mk);
         const books = all.filter((m) => m.book);
         const nonbook = all.filter((m) => !m.book);
@@ -1085,7 +1085,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
       setPosEval(be.mate != null ? (be.mate > 0 ? 1000 : -1000) * baseWhite : be.cp * baseWhite);
       // 비이론 수 9개 보장: 엔진 평가 상위 수로 보충.
       let cur = moves;
-      const curNonbook = () => cur.filter((m) => !m.book && !m.eco).length;
+      const curNonbook = () => cur.filter((m) => !m.book).length;
       if ((!isMaster || masterEmpty) && curNonbook() < 9) {
         const brd = boardFromSans(sans);
         const snapBy = node ? Object.fromEntries(node.moves.map((m) => [m.san, m])) : {};
@@ -1095,10 +1095,13 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
           const add = [];
           for (const pv of pvs) {
             const san = uciToSan(brd, pv.uci, ply % 2 === 0 ? "w" : "b");
-            if (san && !have.has(san)) { const s = snapBy[san] || {}; add.push({ san, book: !!s.book, eco: s.eco, name: s.name, evalCp: s.evalCp, adopt: null, games: null, engine: true }); have.add(san); }
-            if (curNonbook() + add.filter((a) => !a.book && !a.eco).length >= 9) break;
+            if (san && !have.has(san)) { const s = snapBy[san] || {}; add.push({ san, book: !!s.book, name: s.name, evalCp: s.evalCp, adopt: null, games: null, engine: true }); have.add(san); }
+            if (curNonbook() + add.filter((a) => !a.book).length >= 9) break;
           }
-          if (add.length) { add.forEach((a, i) => { setTimeout(() => { if (cancelled) return; setMoves((prev) => prev.some((m) => m.san === a.san) ? prev : [...prev, a]); }, i * 140); }); cur = [...cur, ...add]; }
+          if (add.length && !cancelled) {
+            cur = [...cur, ...add];
+            setMoves((prev) => { const have2 = new Set(prev.map((m) => m.san)); const fresh = add.filter((a) => !have2.has(a.san)); return fresh.length ? [...prev, ...fresh] : prev; });
+          }
         }
       }
       const list = cur.map((m) => m.san);
@@ -1112,6 +1115,23 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
     })();
     return () => { cancelled = true; };
   }, [key, liveOn, engine.status, moves.length, isMaster, masterEmpty]);
+
+  // (표본) 비이론 수 중 표본수가 없는 수(엔진 보충 등)는 그 수를 둔 뒤 위치의 Lichess 총 게임수로 채움 — 수 목록 갱신에 취소되지 않게 별도 처리
+  const statMountedRef = useRef(true);
+  useEffect(() => () => { statMountedRef.current = false; }, []);
+  const statDoneRef = useRef(new Set());
+  useEffect(() => {
+    if (!liveOn) return;
+    const need = moves.filter((m) => !m.book && m.games == null && !statDoneRef.current.has(key + "|" + m.san)).slice(0, 9);
+    need.forEach(async (m) => {
+      statDoneRef.current.add(key + "|" + m.san);
+      try {
+        const child = await fetchLichess([...sans, m.san], false);
+        const g = child && child.posTotal != null ? child.posTotal : null;
+        if (g != null && statMountedRef.current) setMoves((prev) => prev.map((x) => x.san === m.san ? { ...x, games: g } : x));
+      } catch { }
+    });
+  }, [key, moves, liveOn]);
 
   const fallbackEval = useMemo(() => {
     const whites = moves.map((m) => whiteEval(m)).filter((v) => v != null);
@@ -1884,7 +1904,7 @@ function CollectionTab({ unlocked, unlockAll, liveOn, contentVer, chesscom, earn
       </div>
       {opening && <div className="flex items-center gap-3 flex-wrap" style={{ background: "linear-gradient(135deg,#3A2516,#241509)", border: "1px solid " + T.brass, borderRadius: 14, padding: "12px 16px", marginBottom: 14 }}>
         <Mascot name="kokoa" emotion="happy" size={70} />
-        <div><div style={{ fontSize: 16, fontWeight: 800, color: T.ivoryHi }}>{opening.name}</div><div style={{ fontSize: 12, color: T.brassHi, fontFamily: "ui-monospace,monospace" }}>{opening.eco}</div></div>
+        <div><div style={{ fontSize: 16, fontWeight: 800, color: T.ivoryHi }}>{opening.name}</div></div>
         {lc && lc.wdl && <div style={{ marginLeft: "auto", width: 150 }}><WinBar wdl={lc.wdl} /></div>}
         {ccReady && (() => { const cc = chesscom.analyze(path); return cc && cc.total > 0 ? <div style={{ fontSize: 11.5, fontFamily: "ui-monospace,monospace", color: T.ivory, background: "rgba(60,138,60,.25)", border: "1px solid rgba(120,200,120,.4)", borderRadius: 8, padding: "5px 9px" }}>내 chess.com 승률 <b style={{ color: "#9FE39F" }}>{cc.winRate}%</b> · {cc.w}/{cc.d}/{cc.l}</div> : null; })()}
       </div>}
