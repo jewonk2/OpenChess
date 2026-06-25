@@ -92,6 +92,7 @@ function sanSrc(board, sanRaw, color) {
   let piece = "P", s = san; if ("KQRBN".includes(s[0])) { piece = s[0]; s = s.slice(1); }
   const isCap = s.includes("x"); s = s.replace("x", "");
   const dest = s.slice(-2); s = s.slice(0, -2);
+  if (!/^[a-h][1-8]$/.test(dest)) return null;   // 불완전한 SAN(예: "Qd","Qxd") 방어 — 튕김 방지
   const dc = FILES.indexOf(dest[0]), dr = 8 - parseInt(dest[1], 10);
   let fHint = null, rHint = null;
   for (const ch of s) { if (FILES.includes(ch)) fHint = FILES.indexOf(ch); else if ("12345678".includes(ch)) rHint = 8 - parseInt(ch, 10); }
@@ -1213,7 +1214,11 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
   const [devEdit, setDevEdit] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [kwDraft, setKwDraft] = useState([]);
-  const openDevEdit = () => { setNameDraft(nameOverride(editKey, san) ?? (m.name || "")); setKwDraft(kwOverride(editKey, san) || deriveKeywords(m)); setDevEdit(true); };
+  const openDevEdit = () => {
+    let parentName = "";
+    if (sans.length) { const pj = sans.slice(0, -1).join(" "); const last = sans[sans.length - 1]; const ov = nameOverride(pj, last); if (ov) parentName = ov; else { const nd = snapNode(sans.slice(0, -1)); const mm = nd && nd.moves.find((x) => stripSuffix(x.san) === stripSuffix(last)); parentName = (mm && mm.name) || ""; } }
+    setNameDraft(nameOverride(editKey, san) ?? (m.name || parentName)); setKwDraft(kwOverride(editKey, san) || deriveKeywords(m)); setDevEdit(true);
+  };
   const saveMeta = async () => { const k = editKey + "|" + stripSuffix(san); CONTENT.names[k] = nameDraft.trim(); CONTENT.keywords[k] = kwDraft; await bumpContent(); setDevEdit(false); };
   const toggleUnbook = async () => { const k = editKey + "|" + stripSuffix(san); if (CONTENT.unbook[k]) delete CONTENT.unbook[k]; else CONTENT.unbook[k] = true; await bumpContent(); };
   const toggleKw = (kw) => setKwDraft((d) => { if (d.includes(kw)) return d.filter((x) => x !== kw); const p = kwPartner(kw); return [...d.filter((x) => x !== p), kw]; });
@@ -1296,7 +1301,7 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
       {/* 미니보드(좌) + 해설(우) */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flexShrink: 0 }}>
-          <AnimatedMove sans={sans} san={san} size={132} extraArrows={extra} />
+          <AnimatedMove sans={sans} san={san} size={200} extraArrows={extra} />
           {kind === "brilliant" && <p style={{ fontSize: 10, color: T.inkSoft, textAlign: "center", marginTop: 4, lineHeight: 1.4, maxWidth: 150 }}><span style={{ color: T.blunder }}>빨강</span> 잡힐 경로 · <span style={{ color: T.brass }}>금색</span> 노리는 표적</p>}
         </div>
         <div style={{ flex: 1, minWidth: 180 }}>
@@ -1679,12 +1684,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
               </div>
             )}
           </div>
-          <div className="flex items-center mt-3" style={{ gap: 10, justifyContent: "center" }}>
-            <NavBtn onClick={() => setFlip((v) => !v)} active={flip}><ArrowUpDown size={17} /></NavBtn>
-            <NavBtn onClick={reset} disabled={!sans.length}><ChevronsLeft size={17} /></NavBtn>
-            <NavBtn onClick={back} disabled={!sans.length}><ChevronLeft size={17} /></NavBtn>
-            <NavBtn onClick={fwd} disabled={!future.length}><ChevronRight size={17} /></NavBtn>
-          </div>
+
         </div>
       </div>
       <div>
@@ -1771,7 +1771,7 @@ function DexMoveCard({ path, m, child, isUnlocked, hasChildren, wdl, cc, onOpen 
   return (
     <div style={{ borderRadius: 16, padding: 12, background: isUnlocked ? "linear-gradient(180deg,#FBF5E8,#E2D2B2)" : "linear-gradient(180deg,#33261A,#221610)", boxShadow: isUnlocked ? "0 5px 0 #B59A6E, 0 10px 18px -10px rgba(0,0,0,.5)" : "inset 0 1px 0 rgba(255,255,255,.05)", border: "1px solid " + (isUnlocked ? "#CDB98E" : "#000") }}>
       <div style={{ position: "relative" }}>
-        {isUnlocked ? <AnimatedMove sans={path} san={m.san} size={150} />
+        {isUnlocked ? <AnimatedMove sans={path} san={m.san} size={200} />
           : <div style={{ width: 150 + 12, height: 150 + 12, margin: "0 auto", borderRadius: 9, background: "repeating-linear-gradient(45deg,#2A1B10,#2A1B10 8px,#33261A 8px,#33261A 16px)", display: "flex", alignItems: "center", justifyContent: "center" }}><Lock size={28} style={{ color: T.brass }} /></div>}
       </div>
       <div className="flex items-center justify-between" style={{ marginTop: 10 }}>
@@ -2064,7 +2064,7 @@ function PuzzleCard({ p, isSolved, onClick, onDelete, solveCount }) {
   return (
     <div onClick={onClick} className="press text-left" style={{ borderRadius: 14, padding: 14, background: isSolved ? "linear-gradient(180deg,#E7F0DC,#D2E2BC)" : "linear-gradient(180deg," + T.ivoryHi + ",#E2D2B2)", boxShadow: "0 4px 0 " + (isSolved ? "#9DB97E" : "#B59A6E"), border: "1px solid " + (isSolved ? "#A9C589" : "#CDB98E"), cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", minHeight: 132, height: "100%" }}>
       {onDelete && <button onClick={(e) => { e.stopPropagation(); onDelete(p.id); }} aria-label="삭제" className="press" style={{ position: "absolute", top: 6, right: 6, zIndex: 10, width: 24, height: 24, borderRadius: 7, background: "rgba(40,24,12,.78)", color: "#F4C8C8", border: "1px solid #000", fontSize: 13, fontWeight: 800, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>✕</button>}
-      {hasPreview && <div style={{ marginBottom: 10 }}><AnimatedMove sans={p.setupSans} san={p.mistakeSan} size={116} loopMs={2400} flip={flip} /></div>}
+      {hasPreview && <div style={{ marginBottom: 10 }}><AnimatedMove sans={p.setupSans} san={p.mistakeSan} size={168} loopMs={2400} flip={flip} /></div>}
       <div className="flex items-center justify-between" style={{ flexShrink: 0 }}><div style={{ fontSize: 11, color: isSolved ? T.best : T.brass, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "62%" }}>{p.opening}</div>{isSolved && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: T.best, fontSize: 11, fontWeight: 800, flexShrink: 0, marginRight: 22 }}><Check size={14} /> 해결됨</span>}</div>
       <div style={{ fontSize: 13.5, fontWeight: 800, color: T.ink, marginTop: 7, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.4 }}>{p.name}</div>
       <div className="flex items-center justify-between" style={{ marginTop: "auto", paddingTop: 12, gap: 6 }}>
@@ -2452,14 +2452,6 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
           ))}
       </div>
 
-      {/* 라이브 엔진 */}
-      <div style={card}>
-        <div className="flex items-center justify-between"><div className="flex items-center gap-2"><Cpu size={16} style={{ color: T.brass }} /><span style={{ fontSize: 13, fontWeight: 700, color: T.ink }}>라이브 엔진·통계</span></div>
-          <button onClick={() => setLiveOn((v) => !v)} className="press" style={{ width: 46, height: 26, borderRadius: 13, background: liveOn ? T.excellent : "#C9B58C", position: "relative", cursor: "pointer", border: "none" }}><span style={{ position: "absolute", top: 3, left: liveOn ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fff", transition: "left .15s" }} /></button>
-        </div>
-        <p style={{ fontSize: 12, color: T.inkSoft, marginTop: 8, lineHeight: 1.5 }}>엔진: <b style={{ color: engineStatus === "ready" ? T.excellent : T.inkSoft }}>{engineStatus === "ready" ? "Web Worker 작동 중" : engineStatus === "loading" ? "로딩 중…" : "사용 불가(스냅샷)"}</b>. 라이브 시 Lichess 빈도순으로 비이론 수까지 제안하고 보드 착수도 평가합니다.</p>
-      </div>
-
       {/* chess.com */}
       <div style={card}>
         <label style={{ fontSize: 13, fontWeight: 700, color: T.ink }}>chess.com 계정</label>
@@ -2686,7 +2678,7 @@ export default function App() {
   const openAuth = (mode) => { setAuthMode(mode); setAuthOpen(true); };
   useEffect(() => { (async () => {
     const raw = await store.get("chess_state_v5");
-    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra); if (typeof d.liveOn === "boolean") setLiveOn(d.liveOn); if (d.user && d.userHash) { setUser(d.user); setUserHash(d.userHash); try { const r = await acctLogin(d.user, d.userHash); if (r && r.ok && r.data) { const pr = r.data.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); if (r.data.chesscom) setProfile((p) => ({ ...p, chesscom: r.data.chesscom })); } } catch { } } } catch { } }
+    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra); if (d.user && d.userHash) { setUser(d.user); setUserHash(d.userHash); try { const r = await acctLogin(d.user, d.userHash); if (r && r.ok && r.data) { const pr = r.data.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); if (r.data.chesscom) setProfile((p) => ({ ...p, chesscom: r.data.chesscom })); } } catch { } } } catch { } }
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
