@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import {
   GraduationCap, Library, Settings, ChevronLeft, ChevronRight, ChevronsLeft,
   Lock, Crown, Sparkles, Info, Book, BookOpen, ArrowUpDown, Cpu, Wifi, WifiOff,
-  ChevronRight as Crumb, Star, ThumbsUp, Check, Play, ArrowLeft, RotateCcw,
+  ChevronRight as Crumb, Star, ThumbsUp, Check, Play, ArrowLeft, RotateCcw, Search, X,
 } from "lucide-react";
 import __SNAPSHOT__ from "./data/openings.json";
 
@@ -393,7 +393,7 @@ function legalDests(board, fr, fc, color, ep) {
   }
   return out;
 }
-function buildSanBare(board, fr, fc, tr, tc, color, ep) {
+function buildSanBare(board, fr, fc, tr, tc, color, ep, promo) {
   const p = board[fr][fc]; if (!p) return null;
   if (p.t === "K" && Math.abs(tc - fc) === 2) return tc > fc ? "O-O" : "O-O-O";
   const tgt = board[tr][tc];
@@ -401,7 +401,7 @@ function buildSanBare(board, fr, fc, tr, tc, color, ep) {
   const dest = FILES[tc] + (8 - tr);
   if (p.t === "P") {
     let san = (isCap ? FILES[fc] + "x" : "") + dest;
-    if ((color === "w" && tr === 0) || (color === "b" && tr === 7)) san += "=Q";
+    if ((color === "w" && tr === 0) || (color === "b" && tr === 7)) san += "=" + (promo && /^[QRBN]$/.test(promo) ? promo : "Q");
     return san;
   }
   let disamb = "";
@@ -438,8 +438,8 @@ function decorateSan(boardBefore, sanRaw, color) {
   if (!info) return bare;
   return bare + checkSuffix(boardBefore, bare, color);
 }
-function buildSan(board, fr, fc, tr, tc, color, ep) {
-  const bare = buildSanBare(board, fr, fc, tr, tc, color, ep);
+function buildSan(board, fr, fc, tr, tc, color, ep, promo) {
+  const bare = buildSanBare(board, fr, fc, tr, tc, color, ep, promo);
   if (!bare) return null;
   return bare + checkSuffix(board, bare, color);
 }
@@ -679,11 +679,28 @@ const QSYM = { brilliant: "!!", best: "★", only: "!", excellent: "👍", good:
 const KW = {
   "NORMAL": { bg: "#E3EDD9", fg: "#3F5B33", desc: "가장 일반적으로 두어지는 수" },
   "TOP LEVEL": { bg: "#F3E6C2", fg: "#7A5A14", desc: "마스터가 압도적으로 선택" },
+  "LOW-LEVEL": { bg: "#E6E0D6", fg: "#6B6052", desc: "낮은 레벨에서 주로 보이는 수" },
   "TRICKY": { bg: "#E8D8C4", fg: "#7A4E22", desc: "함정을 노리는 까다로운 수" },
-  "SIDESTEPPING": { bg: "#E0DAEC", fg: "#574A78", desc: "잘 알려지지 않은 사이드라인" },
   "INTUITIVE": { bg: "#DCE8EC", fg: "#3C5A63", desc: "의도가 직관적으로 보이는 수" },
+  "DRAWING-WEAPON": { bg: "#E2E2E2", fg: "#555", desc: "무승부를 노리는 수단" },
+  "ANTI-": { bg: "#EAD7D7", fg: "#8A3A3A", desc: "특정 시스템에 대한 대응(안티) 수" },
+  "SWITCH": { bg: "#DCE0EA", fg: "#43507A", desc: "다른 구조·플랜으로 전환하는 수" },
+  // 상보쌍 (대비색, 상호 배타)
+  "MAIN-LINE": { bg: "#CDE8C9", fg: "#1E6B2C", desc: "정석 메인 라인" },
+  "SIDESTEPPING": { bg: "#E0DAEC", fg: "#574A78", desc: "잘 알려지지 않은 사이드라인" },
+  "BALANCE": { bg: "#D3E4F2", fg: "#235C86", desc: "균형 잡힌 국면" },
+  "IMBALANCE": { bg: "#F5DEC9", fg: "#9A5418", desc: "불균형(비대칭) 국면" },
+  "SHARP": { bg: "#F4D2D2", fg: "#A8322F", desc: "날카롭고 전술적인 수" },
+  "QUIET": { bg: "#D2ECE6", fg: "#1F6E63", desc: "조용하고 포지셔널한 수" },
   "STRAIGHT-LINE": { bg: "#E6E2D8", fg: "#5C564A", desc: "이후가 단순·강제적인 수" },
+  "FLEXIBLE": { bg: "#F3E8C6", fg: "#8A6A18", desc: "여러 플랜을 남겨두는 유연한 수" },
+  "OPEN": { bg: "#FBE3CE", fg: "#A85A1E", desc: "개방적인 포지션을 지향" },
+  "CLOSED": { bg: "#D7DEE8", fg: "#3E4C66", desc: "폐쇄적인 포지션을 지향" },
 };
+// 상보쌍: 한 묶음, 동시 선택 불가(둘 다 미선택은 가능)
+const KW_PAIRS = [["MAIN-LINE", "SIDESTEPPING"], ["BALANCE", "IMBALANCE"], ["SHARP", "QUIET"], ["STRAIGHT-LINE", "FLEXIBLE"], ["OPEN", "CLOSED"]];
+const KW_SINGLES = ["NORMAL", "TOP LEVEL", "LOW-LEVEL", "TRICKY", "INTUITIVE", "DRAWING-WEAPON", "ANTI-", "SWITCH"];
+function kwPartner(k) { for (const [a, b] of KW_PAIRS) { if (a === k) return b; if (b === k) return a; } return null; }
 function deriveKeywords(m) {
   if (m.kw && m.kw.length) return m.kw;
   const ks = []; const a = m.adopt || 0; const ma = m.masterAdopt; const nm = m.name || "";
@@ -1080,7 +1097,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
             if (san && !have.has(san)) { const s = snapBy[san] || {}; add.push({ san, book: !!s.book || !!s.eco, eco: s.eco, name: s.name, evalCp: s.evalCp, adopt: null, games: null, engine: true }); have.add(san); }
             if (curNonbook() + add.filter((a) => !a.book && !a.eco).length >= 9) break;
           }
-          if (add.length) { setMoves((prev) => { const have2 = new Set(prev.map((m) => m.san)); const fresh = add.filter((a) => !have2.has(a.san)); return fresh.length ? [...prev, ...fresh] : prev; }); cur = [...cur, ...add]; }
+          if (add.length) { add.forEach((a, i) => { setTimeout(() => { if (cancelled) return; setMoves((prev) => prev.some((m) => m.san === a.san) ? prev : [...prev, a]); }, i * 140); }); cur = [...cur, ...add]; }
         }
       }
       const list = cur.map((m) => m.san);
@@ -1149,7 +1166,7 @@ function AnimatedMove({ sans, san, size = 140, extraArrows = [], loopMs = 2000, 
           {rows.map((row, vr) => (
             <div key={vr} style={{ display: "flex" }}>
               {row.map((p, vc) => { const [r, c] = tx(vr, vc); const light = (r + c) % 2 === 0; const hideFrom = r === fr[0] && c === fr[1]; const isTo = r === to[0] && c === to[1];
-                return <div key={vc} style={{ width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", background: light ? T.boardLight : T.boardDark, boxShadow: (hideFrom || isTo) ? "inset 0 0 0 2px rgba(62,124,196,.6)" : "none" }}>{p && !hideFrom && <span style={{ fontSize: cell * 0.72, lineHeight: 1, opacity: isTo && slid ? 0 : 1, transform: isTo && slid ? "scale(.55)" : "scale(1)", transition: isTo ? "opacity .4s ease .2s, transform .4s ease .2s" : "none", color: p.c === "w" ? T.ivoryHi : "#0E0907" }}>{PIECE[p.t]}</span>}</div>; })}
+                return <div key={vc} style={{ width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", background: light ? T.boardLight : T.boardDark, boxShadow: (hideFrom || isTo) ? "inset 0 0 0 2px rgba(62,124,196,.6)" : "none" }}>{p && !hideFrom && <span style={{ fontSize: cell * 0.72, lineHeight: 1, opacity: isTo && slid ? 0 : 1, transform: isTo && slid ? "scale(.2) rotate(8deg)" : "scale(1)", transition: isTo ? "opacity .22s ease .44s, transform .22s ease .44s" : "none", color: p.c === "w" ? T.ivoryHi : "#0E0907" }}>{PIECE[p.t]}</span>}</div>; })}
             </div>
           ))}
           {mp && <span key={cyc} style={{ position: "absolute", top: dfr0 * cell, left: dfr1 * cell, width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", fontSize: cell * 0.72, lineHeight: 1, color: mp.c === "w" ? T.ivoryHi : "#0E0907", transform: slid ? "translate(" + dx + "px," + dy + "px)" : "translate(0,0)", transition: slid ? "transform .6s cubic-bezier(.4,1.1,.5,1)" : "none", filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))", zIndex: 5 }}>{PIECE[mp.t]}</span>}
@@ -1199,7 +1216,7 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
   const openDevEdit = () => { setNameDraft(nameOverride(editKey, san) ?? (m.name || "")); setKwDraft(kwOverride(editKey, san) || deriveKeywords(m)); setDevEdit(true); };
   const saveMeta = async () => { const k = editKey + "|" + stripSuffix(san); CONTENT.names[k] = nameDraft.trim(); CONTENT.keywords[k] = kwDraft; await bumpContent(); setDevEdit(false); };
   const toggleUnbook = async () => { const k = editKey + "|" + stripSuffix(san); if (CONTENT.unbook[k]) delete CONTENT.unbook[k]; else CONTENT.unbook[k] = true; await bumpContent(); };
-  const toggleKw = (kw) => setKwDraft((d) => d.includes(kw) ? d.filter((x) => x !== kw) : [...d, kw]);
+  const toggleKw = (kw) => setKwDraft((d) => { if (d.includes(kw)) return d.filter((x) => x !== kw); const p = kwPartner(kw); return [...d.filter((x) => x !== p), kw]; });
   const explainLong = !!explain && explain.length > 90;
   const [mistakes, setMistakes] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);   // (UI8) 실수 분석 진행 표시
@@ -1315,8 +1332,15 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
           {devEdit && (
             <div>
               <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} placeholder="수 이름 (예: 이탈리안 게임)" style={{ width: "100%", fontSize: 12, padding: 8, borderRadius: 8, border: "1px solid #C9B58C", background: "#fff", color: T.ink, marginBottom: 8 }} />
-              <div className="flex flex-wrap gap-1" style={{ marginBottom: 8 }}>
-                {Object.keys(KW).map((k) => { const on = kwDraft.includes(k); return <button key={k} onClick={() => toggleKw(k)} className="press" style={{ fontSize: 9.5, fontWeight: 800, padding: "3px 7px", borderRadius: 5, border: "1px solid " + (on ? KW[k].fg : "transparent"), background: on ? KW[k].bg : "rgba(255,255,255,.08)", color: on ? KW[k].fg : T.ivory, cursor: "pointer" }}>{k}</button>; })}
+              <div style={{ marginBottom: 8 }}>
+                {KW_PAIRS.map(([a, b]) => (
+                  <div key={a} className="flex items-center gap-2" style={{ marginBottom: 5 }}>
+                    {[a, b].map((k) => { const on = kwDraft.includes(k); return <button key={k} onClick={() => toggleKw(k)} className="press" style={{ flex: 1, fontSize: 9.5, fontWeight: 800, padding: "5px 7px", borderRadius: 5, border: "1px solid " + (on ? KW[k].fg : "rgba(255,255,255,.15)"), background: on ? KW[k].bg : "rgba(255,255,255,.06)", color: on ? KW[k].fg : T.ivory, cursor: "pointer" }}>{k}</button>; })}
+                  </div>
+                ))}
+                <div className="flex flex-wrap gap-1" style={{ marginTop: 8 }}>
+                  {KW_SINGLES.map((k) => { const on = kwDraft.includes(k); return <button key={k} onClick={() => toggleKw(k)} className="press" style={{ fontSize: 9.5, fontWeight: 800, padding: "3px 7px", borderRadius: 5, border: "1px solid " + (on ? KW[k].fg : "transparent"), background: on ? KW[k].bg : "rgba(255,255,255,.08)", color: on ? KW[k].fg : T.ivory, cursor: "pointer" }}>{k}</button>; })}
+                </div>
               </div>
               <div className="flex gap-2">
                 <button onClick={saveMeta} className="press" style={{ fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 7, border: "none", background: T.brass, color: "#241509", cursor: "pointer" }}>저장</button>
@@ -1445,6 +1469,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const [boardSize, boardRef] = useBoardSize(360);
   const [sel, setSel] = useState(null);
   const [drag, setDrag] = useState(null);
+  const [promoPrompt, setPromoPrompt] = useState(null);   // (기능5) 프로모션 선택 대기 {from,to}
   const [lastMascot, setLastMascot] = useState(EXPLAIN[""]);
   const [focus, setFocus] = useState(null);
   const [lastQ, setLastQ] = useState(null);
@@ -1542,7 +1567,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     setLastQ({ to, kind: "pending" });
     let cancelled = false;
     if (liveOn && engine.status === "ready") {
-      evalMoveKind(prev, lastSan).then((k) => { if (!cancelled && k) setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); });
+      evalMoveKind(prev, lastSan).then((k) => { if (!cancelled && k) { const under = /=/.test(lastSan) && !/=Q/.test(lastSan); if (under && !["inaccuracy", "mistake", "blunder"].includes(k)) k = "brilliant"; setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); } });
     }
     return () => { cancelled = true; };
   }, [key, liveOn, engine.status]);
@@ -1558,12 +1583,22 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const tryMove = useCallback((from, to) => {
     if (from[0] === to[0] && from[1] === to[1]) return false;
     if (!legalDests(board, from[0], from[1], color, ep).some(([r, c]) => r === to[0] && c === to[1])) return false;
+    const pc = board[from[0]][from[1]];
+    if (pc && pc.t === "P" && ((color === "w" && to[0] === 0) || (color === "b" && to[0] === 7))) { setPromoPrompt({ from, to }); return true; }   // (기능5) 프로모션 선택
     const san = buildSan(board, from[0], from[1], to[0], to[1], color, ep);
     if (!san) return false;
     const mm = moves.find((x) => stripSuffix(x.san) === stripSuffix(san));
     if (mm) go(mm.san, false); else go(san, true);   // 블록에 있으면 표준 SAN으로, 없으면 사용자 수 블록 생성
     return true;
   }, [board, color, go, moves, ep]);
+  const completePromo = useCallback((piece) => {
+    if (!promoPrompt) return;
+    const { from, to } = promoPrompt; setPromoPrompt(null); setSel(null); setDrag(null);
+    const san = buildSan(board, from[0], from[1], to[0], to[1], color, ep, piece);
+    if (!san) return;
+    const mm = moves.find((x) => stripSuffix(x.san) === stripSuffix(san));
+    if (mm) go(mm.san, false); else go(san, true);
+  }, [promoPrompt, board, color, ep, moves, go]);
 
   const onSquareClick = useCallback((sq) => {
     const p = board[sq[0]][sq[1]];
@@ -1627,8 +1662,22 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
             <SequenceBar sans={sans} />
             <span className="inline-flex items-center gap-1" style={{ fontSize: 10, color: liveOn ? T.brassHi : T.inkSoft, whiteSpace: "nowrap" }}>{liveOn ? <Wifi size={12} /> : <WifiOff size={12} />}{engineNote || (liveOn ? "라이브" : "스냅샷")}</span>
           </div>
-          <div ref={boardRef} style={{ width: "100%", maxWidth: 360, margin: "0 auto" }}>
+          <div ref={boardRef} style={{ width: "100%", maxWidth: 360, margin: "0 auto", position: "relative" }}>
             <Board board={board} flip={flip} size={boardSize} arrows={arrows} legalTargets={legalTargets} selected={sel} onSquareClick={!focus ? onSquareClick : undefined} onPieceDrag={!focus ? onPieceDrag : undefined} onDrop={!focus ? onDrop : undefined} onMove={!focus ? tryMove : undefined} evalCp={posEval} interactive={!focus} lastQ={lastQ} />
+            {promoPrompt && (
+              <div style={{ position: "absolute", inset: 0, background: "rgba(20,12,6,.7)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 4, zIndex: 30 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: T.ivoryHi }}>승격할 기물 선택</div>
+                <div className="flex gap-2">
+                  {["Q", "R", "B", "N"].map((t) => (
+                    <button key={t} onClick={() => completePromo(t)} className="press" style={{ width: 52, height: 52, borderRadius: 10, background: "linear-gradient(180deg,#FBF4E6,#E7D7BC)", border: "1px solid " + T.brass, boxShadow: "0 3px 0 #B59A6E", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 26, lineHeight: 1, color: "#1A1009" }}>{PIECE[t]}</span>
+                      <span style={{ fontSize: 8.5, fontWeight: 800, color: T.brass }}>{t === "Q" ? "퀸" : t === "R" ? "룩" : t === "B" ? "비숍" : "나이트"}</span>
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => { setPromoPrompt(null); setSel(null); setDrag(null); }} className="press" style={{ fontSize: 10.5, color: T.ivory, background: "transparent", border: "1px solid #5A4630", borderRadius: 7, padding: "4px 12px", cursor: "pointer" }}>취소</button>
+              </div>
+            )}
           </div>
           <div className="flex items-center mt-3" style={{ gap: 10, justifyContent: "center" }}>
             <NavBtn onClick={() => setFlip((v) => !v)} active={flip}><ArrowUpDown size={17} /></NavBtn>
@@ -2499,6 +2548,56 @@ async function acctSave(id, hash, data) {
   const k = "occ_acct:" + lid;
   try { const v = window.localStorage.getItem(k); const a = v ? JSON.parse(v) : { id: lid, pw: hash }; window.localStorage.setItem(k, JSON.stringify({ ...a, ...data })); } catch { }
 }
+// (기능2) 공개 프로필: 별도 테이블 profiles_public 에 클라이언트가 업서트/조회(계정 스키마와 독립). 미설정 시 무해하게 비활성.
+async function publishProfile(id, pub) { if (!SB_ON || !id) return; try { await sbUpsert("profiles_public", { id: id.toLowerCase(), pub }); } catch { } }
+async function userSearch(q) { if (!SB_ON || !q) return []; try { const rows = await sbSelect("profiles_public?id=ilike." + encodeURIComponent(q.toLowerCase() + "*") + "&select=id,pub&limit=20"); return rows || []; } catch { return []; } }
+async function userProfile(id) { if (!SB_ON || !id) return null; try { const rows = await sbSelect("profiles_public?id=eq." + encodeURIComponent(id.toLowerCase()) + "&select=id,pub&limit=1"); return rows && rows[0] ? rows[0] : null; } catch { return null; } }
+function UserSearchModal({ onClose }) {
+  const [q, setQ] = useState(""); const [results, setResults] = useState([]); const [sel, setSel] = useState(null); const [busy, setBusy] = useState(false); const [searched, setSearched] = useState(false);
+  const run = async () => { if (!q.trim()) return; setBusy(true); setSearched(true); const r = await userSearch(q.trim()); setResults(r); setBusy(false); };
+  const open = async (id) => { const r = await userProfile(id); setSel((r && r.pub) || { username: id }); };
+  const pub = sel || {};
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(10,6,3,.6)", zIndex: 80, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "60px 16px" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 420, background: T.paper, borderRadius: 16, border: "1px solid #DCCBA8", overflow: "hidden", boxShadow: "0 20px 50px -12px rgba(0,0,0,.6)" }}>
+        <div className="flex items-center justify-between" style={{ padding: "14px 16px", borderBottom: "1px solid #E4D5B6" }}>
+          <span style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{sel ? "프로필" : "유저 검색"}</span>
+          <button onClick={sel ? () => setSel(null) : onClose} className="press" style={{ width: 28, height: 28, borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{sel ? <ArrowLeft size={15} /> : <X size={15} />}</button>
+        </div>
+        {sel ? (
+          <div style={{ padding: 18 }}>
+            <div className="flex items-center gap-3" style={{ marginBottom: 14 }}>
+              {pub.photo ? <img src={pub.photo} alt="" style={{ width: 64, height: 64, borderRadius: 16, objectFit: "cover", border: "1px solid #C9B58C" }} />
+                : <span style={{ width: 64, height: 64, borderRadius: 16, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 26 }}>{(pub.nickname || pub.username || "?")[0].toUpperCase()}</span>}
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{pub.nickname || pub.username}</div>
+                <div style={{ fontSize: 12, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>@{pub.username}</div>
+              </div>
+            </div>
+            {pub.title && <div style={{ marginBottom: 12 }}><TitleBadge id={pub.title} earned /></div>}
+            {pub.chesscom && <div style={{ fontSize: 12.5, color: T.ink, marginBottom: 6 }}>chess.com: <b>{pub.chesscom}</b></div>}
+            {!pub.nickname && !pub.title && !pub.chesscom && <div style={{ fontSize: 12.5, color: T.inkSoft }}>공개된 프로필 정보가 없습니다.</div>}
+          </div>
+        ) : (
+          <div style={{ padding: 16 }}>
+            <div className="flex items-center gap-2" style={{ marginBottom: 12 }}>
+              <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} placeholder="아이디로 검색" autoFocus style={{ flex: 1, minWidth: 0, padding: "9px 12px", borderRadius: 9, border: "1px solid #C9B58C", background: "#fff", color: T.ink, fontSize: 13 }} />
+              <button onClick={run} className="press" style={{ padding: "9px 14px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", fontSize: 12 }}>검색</button>
+            </div>
+            {busy ? <div style={{ fontSize: 12.5, color: T.inkSoft, padding: 8 }}>검색 중…</div>
+              : results.length === 0 ? (searched ? <div style={{ fontSize: 12.5, color: T.inkSoft, padding: 8 }}>일치하는 유저가 없습니다.</div> : null)
+                : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{results.map((r) => { const p = r.pub || {}; return (
+                  <button key={r.id} onClick={() => open(r.id)} className="press" style={{ display: "flex", alignItems: "center", gap: 10, padding: 9, borderRadius: 10, border: "1px solid #E4D5B6", background: "#FBF5E8", cursor: "pointer", textAlign: "left" }}>
+                    {p.photo ? <img src={p.photo} alt="" style={{ width: 34, height: 34, borderRadius: 9, objectFit: "cover" }} /> : <span style={{ width: 34, height: 34, borderRadius: 9, background: T.brass, color: "#241509", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800 }}>{(p.nickname || r.id || "?")[0].toUpperCase()}</span>}
+                    <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 800, color: T.ink }}>{p.nickname || p.username || r.id}</div><div style={{ fontSize: 10.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>@{p.username || r.id}</div></div>
+                  </button>
+                ); })}</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 function AuthModal({ onClose, onAuth, initialMode }) {
   const [mode, setMode] = useState(initialMode || "login");
   const [id, setId] = useState(""); const [pw, setPw] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
@@ -2564,6 +2663,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [userHash, setUserHash] = useState(null);
   const [authOpen, setAuthOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [confirmLogout, setConfirmLogout] = useState(false);
   const [contentVer, setContentVer] = useState(0);
@@ -2590,6 +2690,7 @@ export default function App() {
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
+  useEffect(() => { if (loaded && user) publishProfile(user, { username: user, nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "" }); }, [loaded, user, profile.nickname, profile.photo, profile.chesscom, currentTitle]);
   useEffect(() => { if (loaded) store.set("chess_state_v5", JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, user, userHash, learnSans, learnExtra })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, user, userHash, learnSans, learnExtra]);
   useEffect(() => { if (loaded && user && userHash) acctSave(user, userHash, { progress: { unlocked: [...unlocked], puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }, chesscom: profile.chesscom || "" }); }, [unlocked, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, user, userHash, loaded, profile.chesscom]);
   // (기능4) 해결 횟수로부터 새 칭호 획득 → 영구 저장 + 획득 알림(장착 버튼)
@@ -2622,19 +2723,23 @@ export default function App() {
           <Mascot name="milku" emotion="great" size={64} style={{ filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))" }} />
           <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
-        {user ? (
-          <div className="flex items-center gap-2">
-            <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800 }}>{user}</span>
-            <button onClick={() => setConfirmLogout(true)} className="press" style={{ padding: "6px 11px", borderRadius: 8, background: T.ebony3, color: T.ivory, border: "1px solid #000", fontSize: 12, cursor: "pointer" }}>로그아웃</button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <button onClick={() => openAuth("login")} className="press" style={{ padding: "6px 12px", borderRadius: 8, background: "transparent", color: T.ivory, border: "1px solid " + T.brass, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>로그인</button>
-            <button onClick={() => openAuth("signup")} className="press" style={{ padding: "6px 12px", borderRadius: 8, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", border: "none", fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}>회원가입</button>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          <button onClick={() => setSearchOpen(true)} aria-label="유저 검색" className="press" style={{ width: 34, height: 34, borderRadius: 8, background: T.ebony3, color: T.brassHi, border: "1px solid #000", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Search size={16} /></button>
+          {user ? (
+            <>
+              <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800 }}>{user}</span>
+              <button onClick={() => setConfirmLogout(true)} className="press" style={{ padding: "6px 11px", borderRadius: 8, background: T.ebony3, color: T.ivory, border: "1px solid #000", fontSize: 12, cursor: "pointer" }}>로그아웃</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => openAuth("login")} className="press" style={{ padding: "6px 12px", borderRadius: 8, background: "transparent", color: T.ivory, border: "1px solid " + T.brass, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>로그인</button>
+              <button onClick={() => openAuth("signup")} className="press" style={{ padding: "6px 12px", borderRadius: 8, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", border: "none", fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}>회원가입</button>
+            </>
+          )}
+        </div>
       </header>
       {authOpen && <AuthModal key={authMode} initialMode={authMode} onClose={() => setAuthOpen(false)} onAuth={onAuth} />}
+      {searchOpen && <UserSearchModal onClose={() => setSearchOpen(false)} />}
       {confirmLogout && (
         <div onClick={() => setConfirmLogout(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 85, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 300, width: "100%", background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 14, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
