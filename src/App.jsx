@@ -1062,7 +1062,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
         const snapBy = Object.fromEntries(base.map((m) => [stripSuffix(m.san), m]));
         const masterAdoptBy = master ? Object.fromEntries(master.moves.map((m) => [stripSuffix(m.san), m.adopt])) : {};
         const masterTopSans = master ? master.moves.slice(0, 3).map((m) => stripSuffix(m.san)) : [];
-        const mk = (l) => { const s = snapBy[stripSuffix(l.san)] || {}; const unb = isUnbooked(key, l.san); return { san: l.san, adopt: l.adopt, games: l.games, wdl: l.wdl, book: !unb && (!!l.eco || !!s.book), eco: l.eco || s.eco, name: (l.eco ? l.name : s.name), kw: s.kw, evalCp: s.evalCp, isMain: s.isMain, masterAdopt: masterAdoptBy[stripSuffix(l.san)] ?? null, masterTop: masterTopSans.includes(stripSuffix(l.san)) }; };
+        const mk = (l) => { const s = snapBy[stripSuffix(l.san)] || {}; const unb = isUnbooked(key, l.san); return { san: l.san, adopt: l.adopt, games: l.games, wdl: l.wdl, book: !unb && !!s.book, eco: l.eco || s.eco, name: (s.name || (l.eco ? l.name : undefined)), kw: s.kw, evalCp: s.evalCp, isMain: s.isMain, masterAdopt: masterAdoptBy[stripSuffix(l.san)] ?? null, masterTop: masterTopSans.includes(stripSuffix(l.san)) }; };
         const all = active.moves.map(mk);
         const books = all.filter((m) => m.book);
         const nonbook = all.filter((m) => !m.book);
@@ -1095,7 +1095,7 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
           const add = [];
           for (const pv of pvs) {
             const san = uciToSan(brd, pv.uci, ply % 2 === 0 ? "w" : "b");
-            if (san && !have.has(san)) { const s = snapBy[san] || {}; add.push({ san, book: !!s.book || !!s.eco, eco: s.eco, name: s.name, evalCp: s.evalCp, adopt: null, games: null, engine: true }); have.add(san); }
+            if (san && !have.has(san)) { const s = snapBy[san] || {}; add.push({ san, book: !!s.book, eco: s.eco, name: s.name, evalCp: s.evalCp, adopt: null, games: null, engine: true }); have.add(san); }
             if (curNonbook() + add.filter((a) => !a.book && !a.eco).length >= 9) break;
           }
           if (add.length) { add.forEach((a, i) => { setTimeout(() => { if (cancelled) return; setMoves((prev) => prev.some((m) => m.san === a.san) ? prev : [...prev, a]); }, i * 140); }); cur = [...cur, ...add]; }
@@ -1312,7 +1312,7 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
     <div>
       <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
         <button onClick={onBack} className="press" style={{ width: 36, height: 36, borderRadius: 10, background: T.ebony2, color: T.ivoryHi, border: "1px solid #000", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><ArrowLeft size={18} /></button>
-        {existingPuzzle && onOpenPuzzle && <button onClick={() => onOpenPuzzle(expectedPuzzleId)} className="press" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 15px", borderRadius: 10, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: "0 3px 0 #7A5E22" }}><Play size={14} /> 퍼즐 풀기</button>}
+        {expectedPuzzleId && onOpenPuzzle && <button onClick={() => onOpenPuzzle(expectedPuzzleId, existingPuzzle)} className="press" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 15px", borderRadius: 10, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: "0 3px 0 #7A5E22" }}><Play size={14} /> 퍼즐 풀기</button>}
       </div>
       {/* 헤더: 아이콘 · 수/이름(크게) · 평가치 */}
       <div className="flex items-center gap-3" style={{ marginBottom: 12 }}>
@@ -1713,12 +1713,12 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
               </div>
             )}
           </div>
-          <div className="flex items-center mt-3" style={{ gap: 10, justifyContent: "space-between" }}>
-            <div className="flex items-center" style={{ gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <NavBtn onClick={() => setFlip((v) => !v)} active={flip}><ArrowUpDown size={17} /></NavBtn>
               <NavBtn onClick={reset} disabled={!sans.length}><RotateCcw size={16} /></NavBtn>
             </div>
-            <div className="flex items-center" style={{ gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <NavBtn onClick={back} disabled={!sans.length}><ChevronLeft size={17} /></NavBtn>
               <NavBtn onClick={fwd} disabled={!future.length}><ChevronRight size={17} /></NavBtn>
             </div>
@@ -2332,7 +2332,17 @@ function SchematicEditor({ bumpContent }) {
     </div>
   );
 }
-function AccountChessStats({ chesscom, username }) {
+function findOpeningPathByName(name) {   // (UX2) 이름이 같은 첫(최단) 이론 수 경로 탐색
+  let queue = [[]]; const seen = new Set([""]); let steps = 0;
+  while (queue.length && steps < 8000) {
+    const path = queue.shift(); steps++;
+    const nd = snapNode(path);
+    if (path.length && nd && nd.opening && nd.opening.name === name) return path;
+    if (nd && nd.moves) for (const mv of nd.moves) { const np = [...path, mv.san]; const k = np.join(" "); if (!seen.has(k) && np.length <= 12) { seen.add(k); queue.push(np); } }
+  }
+  return null;
+}
+function AccountChessStats({ chesscom, username, onOpenOpening }) {
   const [prof, setProf] = useState(null);
   useEffect(() => {
     let cc = false;
@@ -2409,7 +2419,8 @@ function AccountChessStats({ chesscom, username }) {
           <div>
             {byWinrate.map((o) => (
               <div key={o.name} style={rowStyle}>
-                <span style={{ color: T.ink, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "62%" }}>{o.name}</span>
+                {onOpenOpening ? <button onClick={() => onOpenOpening(o.name)} className="press" style={{ color: T.cocoa || "#5A3A22", fontWeight: 700, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "62%", background: "none", border: "none", textAlign: "left", cursor: "pointer", textDecoration: "underline", textDecorationColor: "rgba(120,80,40,.35)", padding: 0, fontSize: "inherit" }}>{o.name}</button>
+                  : <span style={{ color: T.ink, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "62%" }}>{o.name}</span>}
                 <span style={{ fontFamily: "ui-monospace,monospace", color: T.inkSoft, whiteSpace: "nowrap" }}><b style={{ color: o.wr >= 55 ? T.best : o.wr >= 45 ? T.brass : T.blunder }}>{o.wr}%</b> · {o.w}/{o.d}/{o.l}</span>
               </div>
             ))}
@@ -2420,7 +2431,7 @@ function AccountChessStats({ chesscom, username }) {
     </div>
   );
 }
-function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, chesscom, user, isDev, isCodev, devOn, setDevOn, codevOn, setCodevOn, canManageCodev, canAdd, canEdit, bumpContent, contentVer, openAuth, earnedTitles, currentTitle, onEquipTitle }) {
+function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, chesscom, user, isDev, isCodev, devOn, setDevOn, codevOn, setCodevOn, canManageCodev, canAdd, canEdit, bumpContent, contentVer, openAuth, earnedTitles, currentTitle, onEquipTitle, onOpenOpening }) {
   const [cc, setCc] = useState(profile.chesscom || "");
   const [codevId, setCodevId] = useState("");
   const [ccState, setCcState] = useState("idle");   // idle | checking | failed
@@ -2526,7 +2537,7 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
             <button onClick={verifyChesscom} disabled={ccState === "checking"} className="press" style={{ padding: "9px 16px", borderRadius: 9, background: ccState === "failed" ? T.blunder : "linear-gradient(180deg,#3A2516,#241509)", color: ccState === "failed" ? "#fff" : T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer", whiteSpace: "nowrap" }}>{ccState === "checking" ? "확인 중…" : ccState === "failed" ? "연동 실패" : "연동하기"}</button>
           </div>
         )}
-        {linked && <AccountChessStats chesscom={chesscom} username={profile.chesscom} />}
+        {linked && <AccountChessStats chesscom={chesscom} username={profile.chesscom} onOpenOpening={onOpenOpening} />}
       </div>
 
       {/* chess.com 계정 확인 모달 */}
@@ -2767,7 +2778,23 @@ export default function App() {
   const onDeletePuzzle = useCallback((id) => { setPuzzles((prev) => prev.filter((x) => x.id !== id)); setDeletedPuzzles((p) => { const n = new Set(p); n.add(id); return n; }); }, []);
   const onSolved = useCallback((id) => { const already = solved.has(id); if (!already) setSolved((p) => { const n = new Set(p); n.add(id); return n; }); if (user && !already) { const no = puzzleNo(id); puzzleSolveInc(no, user).then((c) => { if (c != null) setSolveCounts((m) => ({ ...m, [no]: c })); }); } }, [user, solved]);
   const switchTab = (k) => { if (k === "dex") setNewUnlocks(0); setNavNonce((n) => n + 1); setTab(k); };
-  const onOpenPuzzle = useCallback((pzId) => { setPuzzles((cur) => { const pz = cur.find((p) => p.id === pzId); if (pz) { setPuzzleActive(pz); setTab("puzzle"); } return cur; }); }, []);
+  const onOpenOpening = useCallback((name) => {
+    const path = findOpeningPathByName(name);
+    setTab("learn");
+    if (!path || !path.length) return;
+    const tSans = path.slice(0, -1); const tSan = path[path.length - 1];
+    const pnode = snapNode(tSans); const mm = pnode && pnode.moves.find((x) => stripSuffix(x.san) === stripSuffix(tSan));
+    const node2 = snapNode(path); const nm = (node2 && node2.opening) ? node2.opening.name : name;
+    setLearnSans(tSans);
+    setLearnFocus({ sans: tSans, san: tSan, m: mm || { san: tSan }, ply: tSans.length, isNew: false, name: nm });
+  }, []);
+  const onOpenPuzzle = useCallback(async (pzId, fallback) => {
+    setTab("puzzle");
+    let pz = await puzzleFetch(puzzleNo(pzId));   // (기능2) 서버(전역)에서 조회 — 생성자 무관
+    if (!pz) pz = fallback || null;               // 서버에 아직 없으면 방금 만든 것
+    if (pz) setPuzzleActive(pz);
+  }, []);
+  useEffect(() => { if (!puzzleActive) return; setPuzzles((prev) => prev.some((x) => x.id === puzzleActive.id) ? prev : ((deletedPuzzles.has(puzzleActive.id) && !solved.has(puzzleActive.id)) ? prev : [...prev, puzzleActive])); }, [puzzleActive]);   // (UX3) 열어본 퍼즐은 로컬 탭에 추가
 
   return (
     <div style={{ minHeight: "100vh", background: "radial-gradient(130% 120% at 50% -10%, #3A2516 0%, #1B0F07 60%)", fontFamily: "system-ui, -apple-system, 'Noto Sans KR', sans-serif" }}>
@@ -2827,7 +2854,7 @@ export default function App() {
         {tab === "learn" && <LearnTab engine={engine} liveOn={liveOn} onFocusActive={setFocusActive} unlockOpening={unlockOpening} onLearned={onLearned} chesscom={chesscom} onSavePuzzle={onSavePuzzle} contentVer={contentVer} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} sans={learnSans} setSans={setLearnSans} future={learnFuture} setFuture={setLearnFuture} extra={learnExtra} setExtra={setLearnExtra} focus={learnFocus} setFocus={setLearnFocus} puzzles={puzzles} onOpenPuzzle={onOpenPuzzle} onOpenFocusBranch={setTab} />}
         {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} unlockAll={user === "adminJ1"} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} earnedTitles={user === "adminJ1" ? new Set(ALL_TITLE_IDS) : earnedTitles} titleCounts={titleCounts} currentTitle={currentTitle} onEquipTitle={equipTitle} />}
         {tab === "puzzle" && <PuzzleTab puzzles={puzzles} solved={solved} onSolved={onSolved} onDeletePuzzle={onDeletePuzzle} solveCounts={solveCounts} active={puzzleActive} setActive={setPuzzleActive} />}
-        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={user === "adminJ1" ? new Set(ALL_TITLE_IDS) : earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} />}
+        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={user === "adminJ1" ? new Set(ALL_TITLE_IDS) : earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} onOpenOpening={onOpenOpening} />}
       </main>
 
       <nav style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: "linear-gradient(180deg,#2E1B10,#160C06)", borderTop: "1px solid #000", height: 66, paddingBottom: "env(safe-area-inset-bottom)" }}>
