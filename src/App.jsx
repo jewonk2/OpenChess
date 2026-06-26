@@ -8,11 +8,11 @@ import {
 
 /* ============================================================ 디자인 토큰 ============================================================ */
 const T = {
-  ebony: "#21130B", ebony2: "#2E1B10", ebony3: "#3D2616",
+  ebony: "#1B1009", ebony2: "#2E1B10", ebony3: "#3D2616",
   ivory: "#EBDDC4", ivoryHi: "#FAF2E2", paper: "#F1E6D0",
   ink: "#2A1A0E", inkSoft: "#7A6650",
   boardLight: "#E8D2A6", boardDark: "#7C4F2E",
-  brass: "#C49A50", brassHi: "#E6C57C",
+  brass: "#C49A50", brassHi: "#ECCB86",
   brilliant: "#16B5A6", only: "#3E7CC4",
   best: "#3F7A3A", excellent: "#5C8A52", good: "#8FB55E",
   inaccuracy: "#E0B53A", mistake: "#D9822B", blunder: "#C8453B",
@@ -20,6 +20,26 @@ const T = {
 };
 const PIECE = { K: "\u265A\uFE0E", Q: "\u265B\uFE0E", R: "\u265C\uFE0E", B: "\u265D\uFE0E", N: "\u265E\uFE0E", P: "\u265F\uFE0E" };
 const FILES = "abcdefgh";
+
+function GeoBackdrop() {
+  const g = "#C49A50";
+  const dia = (x, y, sz, o) => <rect x={x} y={y} width={sz} height={sz} transform={"rotate(45 " + (x + sz / 2) + " " + (y + sz / 2) + ")"} fill="none" stroke={g} strokeWidth="1.2" opacity={o} />;
+  return (
+    <svg aria-hidden="true" width="100%" height="100%" viewBox="0 0 1200 1600" preserveAspectRatio="xMidYMin slice" style={{ position: "fixed", inset: 0, zIndex: -1, pointerEvents: "none" }}>
+      <g fill="none" stroke={g}>
+        <circle cx="600" cy="230" r="360" strokeWidth="1.2" opacity="0.10" />
+        <circle cx="600" cy="230" r="250" strokeWidth="1" opacity="0.07" strokeDasharray="2 9" />
+        <line x1="0" y1="230" x2="1200" y2="230" strokeWidth="1" opacity="0.05" />
+        <line x1="600" y1="-120" x2="600" y2="600" strokeWidth="1" opacity="0.05" />
+        <line x1="110" y1="-60" x2="540" y2="370" strokeWidth="1" opacity="0.06" />
+        <line x1="1090" y1="-60" x2="660" y2="370" strokeWidth="1" opacity="0.06" />
+      </g>
+      {dia(150, 350, 28, 0.12)}{dia(1006, 286, 32, 0.12)}{dia(978, 520, 16, 0.09)}{dia(214, 560, 16, 0.08)}
+      <path d="M120 940 L140 902 L160 940 Z" fill={g} opacity="0.08" />
+      <path d="M1058 1010 L1078 972 L1098 1010 Z" fill={g} opacity="0.08" />
+    </svg>
+  );
+}
 
 const ENGINE_BASE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : "/";
 const ENGINE_URLS = [
@@ -1756,19 +1776,19 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
             </div>
             {(canEdit || canAdd) && <BranchBanner sentKey={key} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} />}
             {/* 헤더(현재 수) 블록 — 마스코트 우상단 + 학습 버튼 */}
-            <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "14px 16px", border: "1px solid #DCCBA8", marginBottom: 14, boxShadow: "0 3px 0 #D7C19A" }}>
+            <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "16px 18px", border: "1px solid #DCCBA8", marginBottom: 14, boxShadow: "0 3px 0 #D7C19A" }}>
               <div style={{ position: "absolute", top: 6, right: 10 }}><Mascot name={ply % 2 === 0 ? "milku" : "kokoa"} emotion={(lastQ && lastQ.kind ? mascotForKind(lastQ.kind) : ["milku", "wink"])[1]} size={58} /></div>
               <div className="flex items-center gap-2" style={{ paddingRight: 64 }}><Sparkles size={15} style={{ color: T.brass }} /><h2 style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{stageTitle}</h2></div>
-              <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 6 }}>{fmtFull(posGames)}</div>
+              <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 8, letterSpacing: ".02em" }}>{fmtFull(posGames)}</div>
               {lastSan && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #E4D5B6" }}>
-                  <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
+                  <div className="flex items-center flex-wrap" style={{ gap: 13 }}>
                     {curKind && QCOLOR[curKind] && <CircleBadge kind={curKind} />}
-                    <span style={{ fontSize: 16, fontWeight: 800, color: T.ink }}>{moveNumber(ply - 1)}{lastSan}</span>
+                    <span style={{ fontSize: 16, fontWeight: 800, color: T.ink, letterSpacing: ".02em" }}>{moveNumber(ply - 1)}{lastSan}</span>
                     {curName && <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink, wordBreak: "keep-all" }}>{curName}</span>}
                     <button onClick={() => enterFocusAt(sans.slice(0, -1), lastSan)} className="press" style={{ marginLeft: "auto", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 11px", borderRadius: 8, background: T.ebony2, color: T.brassHi, fontSize: 11, fontWeight: 800, border: "1px solid #000", cursor: "pointer" }}><Play size={11} /> 학습</button>
                   </div>
-                  <div className="flex items-center flex-wrap" style={{ gap: 16, marginTop: 10 }}>
+                  <div className="flex items-center flex-wrap" style={{ gap: 16, marginTop: 12 }}>
                     {curKind && <span style={{ fontSize: 12, fontWeight: 800, color: QCOLOR[curKind] || T.inkSoft }}>{QLABEL[curKind]}</span>}
                     {curGames != null && <span style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(curGames)}회 진행</span>}
                   </div>
@@ -1841,7 +1861,7 @@ function DexMoveCard({ path, m, child, isUnlocked, hasChildren, wdl, cc, onOpen 
       {isUnlocked && label && <div style={{ fontSize: 12.5, fontWeight: 700, color: T.ink, marginTop: 3, wordBreak: "keep-all" }}>{label}</div>}
       {isUnlocked && wdl && <div style={{ marginTop: 8 }}><WinBar wdl={wdl} /></div>}
       {isUnlocked && cc && cc.total > 0 && (
-        <div className="flex items-center justify-between" style={{ marginTop: 8, fontSize: 10.5, fontFamily: "ui-monospace,monospace", color: T.inkSoft, background: "rgba(60,138,60,.12)", border: "1px solid rgba(60,138,60,.3)", borderRadius: 7, padding: "4px 7px" }}>
+        <div className="flex items-center justify-between" style={{ marginTop: 8, fontSize: 11, fontFamily: "ui-monospace,monospace", color: T.inkSoft, background: "rgba(60,138,60,.12)", border: "1px solid rgba(60,138,60,.3)", borderRadius: 7, padding: "6px 10px", gap: 8, flexWrap: "wrap", letterSpacing: ".02em" }}>
           <span style={{ fontWeight: 800, color: "#2E6E2E" }}>내 승률 {cc.winRate}%</span>
           <span><span style={{ color: T.best }}>{cc.w}승</span> {cc.d}무 <span style={{ color: T.blunder }}>{cc.l}패</span> · {fmtFull(cc.total)}판</span>
         </div>
@@ -1907,7 +1927,7 @@ function CollectionTab({ unlocked, unlockAll, liveOn, contentVer, chesscom, earn
         <Mascot name="kokoa" emotion="happy" size={70} />
         <div><div style={{ fontSize: 16, fontWeight: 800, color: T.ivoryHi }}>{opening.name}</div></div>
         {lc && lc.wdl && <div style={{ marginLeft: "auto", width: 150 }}><WinBar wdl={lc.wdl} /></div>}
-        {ccReady && (() => { const cc = chesscom.analyze(path); return cc && cc.total > 0 ? <div style={{ fontSize: 11.5, fontFamily: "ui-monospace,monospace", color: T.ivory, background: "rgba(60,138,60,.25)", border: "1px solid rgba(120,200,120,.4)", borderRadius: 8, padding: "5px 9px" }}>내 chess.com 승률 <b style={{ color: "#9FE39F" }}>{cc.winRate}%</b> · {cc.w}/{cc.d}/{cc.l}</div> : null; })()}
+        {ccReady && (() => { const cc = chesscom.analyze(path); return cc && cc.total > 0 ? <div style={{ fontSize: 11.5, fontFamily: "ui-monospace,monospace", color: T.ivory, background: "rgba(60,138,60,.25)", border: "1px solid rgba(120,200,120,.4)", borderRadius: 8, padding: "6px 11px", letterSpacing: ".02em" }}>내 chess.com 승률 <b style={{ color: "#9FE39F" }}>{cc.winRate}%</b> · {cc.w}/{cc.d}/{cc.l}</div> : null; })()}
       </div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {baseMoves.map((m) => {
@@ -2204,7 +2224,7 @@ function PuzzleTab({ puzzles, solved, onSolved, onDeletePuzzle, solveCounts, act
 
 /* ============================================================ 설정 탭 ============================================================ */
 // (기능5) 프로필 편집 — 사진/이름/칭호/자주 두는 첫 수/국적
-function ProfileEditor({ profile, setProfile, earnedTitles, currentTitle, onEquipTitle, card }) {
+function ProfileEditor({ profile, setProfile, earnedTitles, currentTitle, onEquipTitle, card, user, isDev, isCodev }) {
   const set = (patch) => setProfile({ ...profile, ...patch });
   const fm = profile.firstMoves || { white: "", black: {} };
   const setFM = (patch) => set({ firstMoves: { ...fm, ...patch } });
@@ -2229,6 +2249,13 @@ function ProfileEditor({ profile, setProfile, earnedTitles, currentTitle, onEqui
   const lab = { fontSize: 12, fontWeight: 800, color: T.ink, margin: "14px 0 6px" };
   return (
     <div style={card}>
+      <div className="flex items-center gap-3" style={{ marginBottom: 14, paddingBottom: 14, borderBottom: "1px solid #E0CFA8" }}>
+        <span style={{ width: 42, height: 42, borderRadius: 12, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 18, flexShrink: 0 }}>{(user || "?")[0].toUpperCase()}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{user}{isDev && <span style={{ color: T.brass }}> 👑</span>}</div>
+          <div style={{ fontSize: 11, color: T.inkSoft, letterSpacing: ".01em" }}>{isDev ? "개발자 계정" : isCodev ? "공동 개발자" : "일반 회원"} · 진도가 서버에 저장됩니다</div>
+        </div>
+      </div>
       <div style={{ fontSize: 13, fontWeight: 800, color: T.ink }}>프로필 편집</div>
       <div className="flex items-center gap-3" style={{ margin: "12px 0" }}>
         {profile.photo ? <img src={profile.photo} alt="" style={{ width: 56, height: 56, borderRadius: 14, objectFit: "cover", border: "1px solid #C9B58C" }} />
@@ -2490,18 +2517,13 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
     <div className="max-w-xl">
       <div className="flex items-center gap-2"><Mascot name="milku" emotion="wink" size={64} /><h2 style={{ fontSize: 18, fontWeight: 800, color: T.ivoryHi }}>설정</h2></div>
 
-      {/* 계정 정보 */}
-      <div style={card}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>계정</div>
-        {user ? (
-          <div className="flex items-center gap-2">
-            <span style={{ width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800 }}>{user[0].toUpperCase()}</span>
-            <div><div style={{ fontSize: 14, fontWeight: 800, color: T.ink }}>{user}{isDev && <span style={{ color: T.brass }}> 👑</span>}</div><div style={{ fontSize: 11, color: T.inkSoft }}>{isDev ? "개발자 계정" : isCodev ? "공동 개발자" : "일반 회원"} · 진도가 서버에 저장됩니다</div></div>
-          </div>
-        ) : (
+      {/* 계정 — 로그아웃 상태에서만 표시(로그인 시 아래 프로필 카드에 통합) */}
+      {!user && (
+        <div style={card}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>계정</div>
           <div className="flex items-center justify-between"><span style={{ fontSize: 12.5, color: T.inkSoft }}>로그인하면 진도가 계정에 저장됩니다.</span><button onClick={() => openAuth("login")} className="press" style={{ padding: "7px 14px", borderRadius: 8, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer" }}>로그인 / 회원가입</button></div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* 개발자 모드 토글 (개발자 계정 한정) */}
       {isDev && (
@@ -2524,7 +2546,7 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
       )}
 
       {/* (기능5) 프로필 편집 */}
-      {user && <ProfileEditor profile={profile} setProfile={setProfile} earnedTitles={earnedTitles} currentTitle={currentTitle} onEquipTitle={onEquipTitle} card={card} />}
+      {user && <ProfileEditor profile={profile} setProfile={setProfile} earnedTitles={earnedTitles} currentTitle={currentTitle} onEquipTitle={onEquipTitle} card={card} user={user} isDev={isDev} isCodev={isCodev} />}
 
       {/* (기능6) 이론 수 체계 추가 (개발자/공동 개발자 모드) */}
       {canAdd && (
@@ -3061,19 +3083,19 @@ export default function App() {
   useEffect(() => { if (!puzzleActive) return; setPuzzles((prev) => prev.some((x) => x.id === puzzleActive.id) ? prev : ((deletedPuzzles.has(puzzleActive.id) && !solved.has(puzzleActive.id)) ? prev : [...prev, puzzleActive])); }, [puzzleActive]);   // (UX3) 열어본 퍼즐은 로컬 탭에 추가
 
   return (
-    <div style={{ minHeight: "100vh", background: "radial-gradient(130% 120% at 50% -10%, #3A2516 0%, #1B0F07 60%)", fontFamily: "system-ui, -apple-system, 'Noto Sans KR', sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: "transparent", fontFamily: "system-ui, -apple-system, 'Noto Sans KR', sans-serif" }}>
       <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}"}</style>
+      <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: -2, background: "radial-gradient(130% 120% at 50% -10%, #34230F 0%, #150C06 65%)" }} />
+      <GeoBackdrop />
       <header className="flex items-center justify-between" style={{ padding: "16px 20px", borderBottom: "1px solid #000", background: "linear-gradient(180deg,#3A2516,#2A1810)" }}>
         <div className="flex items-center gap-3">
           <Mascot name="milku" emotion="great" size={64} style={{ filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))" }} />
           <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setSearchOpen(true)} aria-label="유저 검색" className="press" style={{ width: 34, height: 34, borderRadius: 8, background: T.ebony3, color: T.brassHi, border: "1px solid #000", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Search size={16} /></button>
+        <div className="flex items-center" style={{ gap: 10 }}>
           {user ? (
             <>
-              <button onClick={() => setFriendsOpen(true)} aria-label="친구" className="press" style={{ width: 34, height: 34, borderRadius: 8, background: T.ebony3, color: T.brassHi, border: "1px solid #000", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Users size={16} /></button>
-              <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800 }}>{user}</span>
+              <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800, maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user}</span>
               <button onClick={() => setConfirmLogout(true)} className="press" style={{ padding: "6px 11px", borderRadius: 8, background: T.ebony3, color: T.ivory, border: "1px solid #000", fontSize: 12, cursor: "pointer" }}>로그아웃</button>
             </>
           ) : (
@@ -3082,6 +3104,9 @@ export default function App() {
               <button onClick={() => openAuth("signup")} className="press" style={{ padding: "6px 12px", borderRadius: 8, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", border: "none", fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}>회원가입</button>
             </>
           )}
+          <span style={{ width: 1, height: 22, background: "linear-gradient(180deg,transparent," + T.brass + ",transparent)", opacity: .55 }} />
+          <button onClick={() => setSearchOpen(true)} aria-label="유저 검색" className="press" style={{ width: 34, height: 34, borderRadius: 9, background: T.ebony3, color: T.brassHi, border: "1px solid " + T.brass, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Search size={16} /></button>
+          {user && <button onClick={() => setFriendsOpen(true)} aria-label="친구" className="press" style={{ width: 34, height: 34, borderRadius: 9, background: T.ebony3, color: T.brassHi, border: "1px solid " + T.brass, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Users size={16} /></button>}
         </div>
       </header>
       {authOpen && <AuthModal key={authMode} initialMode={authMode} onClose={() => setAuthOpen(false)} onAuth={onAuth} />}
@@ -3125,9 +3150,9 @@ export default function App() {
 
       <nav style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: "linear-gradient(180deg,#2E1B10,#160C06)", borderTop: "1px solid #000", height: 66, paddingBottom: "env(safe-area-inset-bottom)" }}>
         {(
-          <div className="flex" style={{ maxWidth: 480, margin: "0 auto", height: "100%", gap: 16, padding: "0 18px" }}>
+          <div className="flex" style={{ justifyContent: "center", margin: "0 auto", height: "100%", gap: 34, padding: "0 18px" }}>
             {TABS.map(({ key, label, Icon }) => { const on = tab === key; const badge = key === "dex" ? newUnlocks : 0; return (
-              <button key={key} onClick={() => switchTab(key)} className="flex-1 flex flex-col items-center justify-center gap-1" style={{ color: on ? T.brassHi : "#8A7458", position: "relative", background: "none", border: "none", cursor: "pointer" }}>
+              <button key={key} onClick={() => switchTab(key)} className="flex flex-col items-center justify-center gap-1" style={{ width: 60, color: on ? T.brassHi : "#8A7458", position: "relative", background: "none", border: "none", cursor: "pointer" }}>
                 {on && <span style={{ position: "absolute", top: 0, height: 3, width: 34, borderRadius: 3, background: T.brass }} />}
                 <span style={{ position: "relative" }}><Icon size={21} />{badge > 0 && <span style={{ position: "absolute", top: -5, right: -8, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 8, background: "#D33", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{badge}</span>}</span>
                 <span style={{ fontSize: 11.5, fontWeight: on ? 700 : 500 }}>{label}</span>
