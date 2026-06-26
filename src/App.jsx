@@ -2701,6 +2701,42 @@ async function authLogout() {
   if (SB_ON && SB_TOKEN) { try { await fetch(SB_URL + "/auth/v1/logout", { method: "POST", headers: sbHeaders() }); } catch { } }
   clearSession();
 }
+/* 비밀번호 재설정 요청: 아이디 또는 이메일 → 연동된 이메일로 재설정 링크 발송. 존재 여부는 노출하지 않음(항상 성공 응답). */
+async function authRecover(loginOrEmail) {
+  if (!SB_ON) return { ok: false, error: "offline" };
+  let email = (loginOrEmail || "").trim();
+  if (!email) return { ok: false, error: "empty" };
+  if (!email.includes("@")) {
+    try { const e = await sbRpc("email_for_username", { p_username: email.toLowerCase() }); email = (typeof e === "string" ? e : (e && e.email)) || ""; } catch { email = ""; }
+  }
+  if (!email) return { ok: true };   // 미존재 계정도 동일 응답(열거 방지)
+  try { await gotrue("recover", { email }); } catch { }
+  return { ok: true };
+}
+/* 복구 링크로 진입했는지(해시에 type=recovery & access_token) 판별 */
+function parseRecoveryHash() {
+  try {
+    const h = (typeof window !== "undefined" && window.location.hash) || "";
+    if (h.indexOf("type=recovery") < 0) return null;
+    const p = new URLSearchParams(h.replace(/^#/, ""));
+    const at = p.get("access_token"); if (!at) return null;
+    return { access_token: at, refresh_token: p.get("refresh_token") || null };
+  } catch { return null; }
+}
+/* 새 비밀번호 설정(복구 세션 사용) → 성공 시 자동 로그인 account 반환 */
+async function authSetPassword(recovery, password) {
+  if (!SB_ON) return { ok: false, error: "offline" };
+  SB_TOKEN = recovery.access_token;
+  try {
+    const r = await fetch(SB_URL + "/auth/v1/user", { method: "PUT", headers: sbHeaders(), body: JSON.stringify({ password }) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok) { clearSession(); return { ok: false, error: "reset_failed" }; }
+    const uid = applySession({ access_token: recovery.access_token, refresh_token: recovery.refresh_token, user: j });
+    try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { }
+    if (!uid) return { ok: true };
+    return { ok: true, account: await loadAccount(uid) };
+  } catch { clearSession(); return { ok: false, error: "reset_failed" }; }
+}
 /* 진도 저장(본인만; RLS 가 auth.uid()=id 강제) */
 async function progressSave(uid, progress) { if (!SB_ON || !uid) return; try { await sbUpsert("user_progress", { id: uid, progress }); } catch { } }
 // (기능2) 공개 프로필: 별도 테이블 profiles_public 에 클라이언트가 업서트/조회(계정 스키마와 독립). 미설정 시 무해하게 비활성.
@@ -2936,9 +2972,17 @@ function FriendsModal({ me, myUid, onClose }) {
 function AuthModal({ onClose, onAuth, initialMode }) {
   const [mode, setMode] = useState(initialMode || "login");
   const [email, setEmail] = useState(""); const [id, setId] = useState(""); const [pw, setPw] = useState("");
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false); const [sent, setSent] = useState(false);
   const submit = async () => {
     setErr("");
+    if (mode === "reset") {
+      const who = email.trim();
+      if (!who) { setErr("아이디 또는 이메일을 입력하세요."); return; }
+      setBusy(true);
+      try { await authRecover(who); } catch { }
+      setBusy(false); setSent(true);
+      return;
+    }
     const em = email.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { setErr("올바른 이메일을 입력하세요."); return; }
     if (pw.length < 6) { setErr("비밀번호는 6자 이상이어야 합니다."); return; }
@@ -2965,27 +3009,76 @@ function AuthModal({ onClose, onAuth, initialMode }) {
     setBusy(false);
   };
   const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink };
+  const title = mode === "login" ? "다시 오신 걸 환영해요" : mode === "signup" ? "OpenChess 시작하기" : "비밀번호 찾기";
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 340, background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
         <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 2, marginBottom: 6, marginTop: -4 }}>
-          <Mascot name="milku" emotion={mode === "login" ? "wink" : "great"} size={92} />
-          <Mascot name="kokoa" emotion={mode === "login" ? "happy" : "celebrate"} size={92} />
+          <Mascot name="milku" emotion={mode === "login" ? "wink" : mode === "signup" ? "great" : "surprise"} size={92} />
+          <Mascot name="kokoa" emotion={mode === "signup" ? "celebrate" : "happy"} size={92} />
         </div>
         <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{mode === "login" ? "다시 오신 걸 환영해요" : "OpenChess 시작하기"}</div>
+          <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{title}</div>
           <button onClick={onClose} className="press" style={{ width: 28, height: 28, borderRadius: 8, border: "none", background: "#0002", color: T.ink, cursor: "pointer" }}>✕</button>
         </div>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일" type="email" autoComplete="email" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
-        {mode === "signup" && <input value={id} onChange={(e) => setId(e.target.value)} placeholder="아이디 (영문+숫자 3~20자, 공개 표시)" style={inputStyle} />}
-        <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호 (6자 이상)" autoComplete={mode === "login" ? "current-password" : "new-password"} onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
-        {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
-        <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", marginBottom: 10 }}>{busy ? "처리 중…" : (mode === "login" ? "로그인" : "가입하고 시작")}</button>
-        <div style={{ textAlign: "center", fontSize: 12.5, color: T.inkSoft }}>
-          {mode === "login" ? "계정이 없나요? " : "이미 계정이 있나요? "}
-          <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); }} style={{ color: T.cocoa || "#5A3A22", fontWeight: 800, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>{mode === "login" ? "회원가입" : "로그인"}</button>
+        {mode === "reset" ? (sent ? (
+          <>
+            <p style={{ fontSize: 13, color: T.ink, lineHeight: 1.6, marginBottom: 14 }}>입력하신 계정이 존재하면 연동된 이메일로 비밀번호 재설정 링크를 보냈습니다. 메일함(스팸함 포함)을 확인해 주세요.</p>
+            <button onClick={() => { setMode("login"); setSent(false); setErr(""); setPw(""); }} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer" }}>로그인으로 돌아가기</button>
+          </>
+        ) : (
+          <>
+            <p style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5, marginBottom: 10 }}>가입 시 사용한 아이디 또는 이메일을 입력하면 연동된 이메일로 재설정 링크를 보내드립니다.</p>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="아이디 또는 이메일" autoComplete="username" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
+            {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
+            <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", marginBottom: 10 }}>{busy ? "보내는 중…" : "재설정 메일 보내기"}</button>
+            <div style={{ textAlign: "center", fontSize: 12.5, color: T.inkSoft }}>
+              <button onClick={() => { setMode("login"); setErr(""); }} style={{ color: "#5A3A22", fontWeight: 800, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>로그인으로 돌아가기</button>
+            </div>
+          </>
+        )) : (
+          <>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일" type="email" autoComplete="email" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
+            {mode === "signup" && <input value={id} onChange={(e) => setId(e.target.value)} placeholder="아이디 (영문+숫자 3~20자, 공개 표시)" style={inputStyle} />}
+            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호 (6자 이상)" autoComplete={mode === "login" ? "current-password" : "new-password"} onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
+            {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
+            <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", marginBottom: 10 }}>{busy ? "처리 중…" : (mode === "login" ? "로그인" : "가입하고 시작")}</button>
+            {mode === "login" && <div style={{ textAlign: "center", marginBottom: 8 }}><button onClick={() => { setMode("reset"); setErr(""); setSent(false); setPw(""); }} style={{ color: T.inkSoft, fontSize: 12, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>비밀번호를 잊으셨나요?</button></div>}
+            <div style={{ textAlign: "center", fontSize: 12.5, color: T.inkSoft }}>
+              {mode === "login" ? "계정이 없나요? " : "이미 계정이 있나요? "}
+              <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); }} style={{ color: "#5A3A22", fontWeight: 800, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>{mode === "login" ? "회원가입" : "로그인"}</button>
+            </div>
+            <p style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.4 }}>이메일·비밀번호로 가입합니다. 아이디는 친구 검색·프로필에 공개로 표시되며, 진도(도감·해결한 퍼즐)는 계정에 저장됩니다.</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NewPasswordModal({ recovery, onDone, onClose }) {
+  const [pw, setPw] = useState(""); const [pw2, setPw2] = useState("");
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setErr("");
+    if (pw.length < 6) { setErr("비밀번호는 6자 이상이어야 합니다."); return; }
+    if (pw !== pw2) { setErr("비밀번호가 일치하지 않습니다."); return; }
+    setBusy(true);
+    try { const r = await authSetPassword(recovery, pw); if (!r.ok) { setErr("재설정에 실패했습니다. 링크가 만료되었을 수 있습니다."); setBusy(false); return; } onDone(r.account || null); }
+    catch { setErr("처리 중 오류가 발생했습니다."); setBusy(false); }
+  };
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ width: "100%", maxWidth: 340, background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>새 비밀번호 설정</div>
+          <button onClick={onClose} className="press" style={{ width: 28, height: 28, borderRadius: 8, border: "none", background: "#0002", color: T.ink, cursor: "pointer" }}>✕</button>
         </div>
-        <p style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.4 }}>이메일·비밀번호로 가입합니다. 아이디는 친구 검색·프로필에 공개로 표시되며, 진도(도감·해결한 퍼즐)는 계정에 저장됩니다.</p>
+        <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="새 비밀번호 (6자 이상)" autoComplete="new-password" style={inputStyle} />
+        <input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="새 비밀번호 확인" autoComplete="new-password" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
+        {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
+        <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer" }}>{busy ? "설정 중…" : "비밀번호 변경하고 로그인"}</button>
       </div>
     </div>
   );
@@ -3011,6 +3104,7 @@ export default function App() {
   const [user, setUser] = useState(null); // username (표시/검색)
   const [uid, setUid] = useState(null);    // auth uid (데이터 접근)
   const [authOpen, setAuthOpen] = useState(false);
+  const [recovery, setRecovery] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
@@ -3031,12 +3125,14 @@ export default function App() {
   const isCodev = !!user && Array.isArray(CONTENT.codev) && CONTENT.codev.includes(user);
   const canEdit = (isDev && devOn) || (isCodev && codevOn);   // (기능3) 분기점 해설·수 설명·수 키워드 수정 권한
   const canAdd = canEdit;
-  const canManageCodev = isDev && devOn;                       // 공동 개발자 지정/해제는 개발자만
+  const canManageCodev = isDev && devOn;
+  const devUnlockAll = (isDev && devOn) || (isCodev && codevOn);                       // 공동 개발자 지정/해제는 개발자만
   const openAuth = (mode) => { setAuthMode(mode); setAuthOpen(true); };
   useEffect(() => { (async () => {
+    const _rec = parseRecoveryHash(); if (_rec) setRecovery(_rec);
     const raw = await store.get("chess_state_v5");
     if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra); } catch { } }
-    try { const acc = await authRestore(); if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); } } catch { }
+    try { if (!_rec) { const acc = await authRestore(); if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); } } } catch { }
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
@@ -3110,6 +3206,7 @@ export default function App() {
         </div>
       </header>
       {authOpen && <AuthModal key={authMode} initialMode={authMode} onClose={() => setAuthOpen(false)} onAuth={onAuth} />}
+      {recovery && <NewPasswordModal recovery={recovery} onDone={(acc) => { setRecovery(null); if (acc) onAuth(acc); }} onClose={() => setRecovery(null)} />}
       {searchOpen && <UserSearchModal me={user} onClose={() => setSearchOpen(false)} />}
       {friendsOpen && <FriendsModal me={user} myUid={uid} onClose={() => setFriendsOpen(false)} />}
       {confirmLogout && (
@@ -3143,9 +3240,9 @@ export default function App() {
 
       <main style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 18px 110px" }}>
         {tab === "learn" && <LearnTab engine={engine} liveOn={liveOn} onFocusActive={setFocusActive} unlockOpening={unlockOpening} onLearned={onLearned} chesscom={chesscom} onSavePuzzle={onSavePuzzle} contentVer={contentVer} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} sans={learnSans} setSans={setLearnSans} future={learnFuture} setFuture={setLearnFuture} extra={learnExtra} setExtra={setLearnExtra} focus={learnFocus} setFocus={setLearnFocus} puzzles={puzzles} onOpenPuzzle={onOpenPuzzle} onOpenFocusBranch={setTab} />}
-        {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} unlockAll={user === "adminJ1"} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} earnedTitles={user === "adminJ1" ? new Set(ALL_TITLE_IDS) : earnedTitles} titleCounts={titleCounts} currentTitle={currentTitle} onEquipTitle={equipTitle} />}
+        {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} unlockAll={devUnlockAll} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} earnedTitles={devUnlockAll ? new Set(ALL_TITLE_IDS) : earnedTitles} titleCounts={titleCounts} currentTitle={currentTitle} onEquipTitle={equipTitle} />}
         {tab === "puzzle" && <PuzzleTab puzzles={puzzles} solved={solved} onSolved={onSolved} onDeletePuzzle={onDeletePuzzle} solveCounts={solveCounts} active={puzzleActive} setActive={setPuzzleActive} />}
-        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={user === "adminJ1" ? new Set(ALL_TITLE_IDS) : earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} onOpenOpening={onOpenOpening} />}
+        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} onOpenOpening={onOpenOpening} />}
       </main>
 
       <nav style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: "linear-gradient(180deg,#2E1B10,#160C06)", borderTop: "1px solid #000", height: 66, paddingBottom: "env(safe-area-inset-bottom)" }}>
