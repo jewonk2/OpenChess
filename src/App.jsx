@@ -2969,6 +2969,84 @@ function FriendsModal({ me, myUid, onClose }) {
     </div>
   );
 }
+function GoogleG() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
+  );
+}
+/* Google OAuth 시작: GoTrue authorize 로 리다이렉트. 복귀 시 URL 해시에 세션 토큰이 담겨 돌아온다. */
+function authGoogleStart() {
+  if (!SB_ON) return;
+  const redirect = window.location.origin + window.location.pathname;
+  window.location.href = SB_URL + "/auth/v1/authorize?provider=google&redirect_to=" + encodeURIComponent(redirect);
+}
+/* OAuth 복귀 해시(access_token 있고 recovery 아님) 파싱 */
+function parseOAuthHash() {
+  try {
+    const h = (typeof window !== "undefined" && window.location.hash) || "";
+    if (h.indexOf("access_token") < 0 || h.indexOf("type=recovery") >= 0) return null;
+    const p = new URLSearchParams(h.replace(/^#/, ""));
+    const at = p.get("access_token"); if (!at) return null;
+    return { access_token: at, refresh_token: p.get("refresh_token") || null };
+  } catch { return null; }
+}
+/* OAuth 해시 → 세션 적용 + 계정 로드. username 이 비어 있으면(최초 구글 로그인) 아이디 설정 필요 */
+async function authFromHash(h) {
+  if (!SB_ON) return null;
+  SB_TOKEN = h.access_token; saveRefresh(h.refresh_token || null);
+  let uid = null;
+  try { const r = await fetch(SB_URL + "/auth/v1/user", { headers: sbHeaders() }); if (r.ok) { const u = await r.json(); uid = (u && u.id) || null; } } catch { }
+  if (!uid) { clearSession(); return null; }
+  return await loadAccount(uid);
+}
+/* 최초 구글 로그인 후 아이디 확정 → profiles 행 생성(기존 username 체계 공유) */
+async function claimUsername(uid, username) {
+  if (!SB_ON || !uid) return { ok: false, error: "offline" };
+  const uname = (username || "").toLowerCase();
+  if (!ALNUM.test(uname) || uname.length < 3 || uname.length > 20) return { ok: false, error: "invalid" };
+  try { const avail = await sbRpc("username_available", { p_username: uname }); if (avail === false) return { ok: false, error: "username_taken" }; } catch { }
+  try {
+    const r = await fetch(SB_URL + "/rest/v1/profiles", { method: "POST", headers: { ...sbHeaders(), Prefer: "return=minimal" }, body: JSON.stringify({ id: uid, username: uname, pub: {} }) });
+    if (!r.ok) { const t = await r.text().catch(() => ""); return { ok: false, error: /duplicate|unique|23505|already exists/i.test(t) ? "username_taken" : "failed" }; }
+    return { ok: true };
+  } catch { return { ok: false, error: "failed" }; }
+}
+
+function UsernameSetupModal({ account, onDone, onCancel }) {
+  const [id, setId] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setErr("");
+    if (!ALNUM.test(id) || id.length < 3 || id.length > 20) { setErr("아이디는 영문+숫자 3~20자여야 합니다."); return; }
+    setBusy(true);
+    try {
+      const r = await claimUsername(account.uid, id);
+      if (!r.ok) { setErr(r.error === "username_taken" ? "이미 사용 중인 아이디입니다." : r.error === "invalid" ? "아이디 형식이 올바르지 않습니다." : "처리 중 오류가 발생했습니다."); setBusy(false); return; }
+      onDone({ uid: account.uid, username: id.toLowerCase(), pub: account.pub || {}, progress: account.progress || {} });
+    } catch { setErr("처리 중 오류가 발생했습니다."); setBusy(false); }
+  };
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #C9B58C", marginBottom: 8, background: "#fff", color: T.ink };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ width: "100%", maxWidth: 340, background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>아이디 설정</div>
+          <button onClick={onCancel} className="press" style={{ width: 28, height: 28, borderRadius: 8, border: "none", background: "#0002", color: T.ink, cursor: "pointer" }}>✕</button>
+        </div>
+        <p style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: 1.5, marginBottom: 12 }}>Google 계정으로 처음 로그인했어요. 친구 검색·프로필에 표시될 아이디를 정해 주세요.</p>
+        <input value={id} onChange={(e) => setId(e.target.value)} placeholder="아이디 (영문+숫자 3~20자)" autoComplete="username" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
+        {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
+        <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer" }}>{busy ? "설정 중…" : "시작하기"}</button>
+        <div style={{ textAlign: "center", marginTop: 8 }}><button onClick={onCancel} style={{ color: T.inkSoft, fontSize: 12, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>취소하고 로그아웃</button></div>
+      </div>
+    </div>
+  );
+}
+
 function AuthModal({ onClose, onAuth, initialMode }) {
   const [mode, setMode] = useState(initialMode || "login");
   const [email, setEmail] = useState(""); const [id, setId] = useState(""); const [pw, setPw] = useState("");
@@ -3043,6 +3121,8 @@ function AuthModal({ onClose, onAuth, initialMode }) {
             <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호 (6자 이상)" autoComplete={mode === "login" ? "current-password" : "new-password"} onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
             {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
             <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", marginBottom: 10 }}>{busy ? "처리 중…" : (mode === "login" ? "로그인" : "가입하고 시작")}</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "2px 0 10px" }}><div style={{ flex: 1, height: 1, background: "#C9B58C" }} /><span style={{ fontSize: 11, color: T.inkSoft }}>또는</span><div style={{ flex: 1, height: 1, background: "#C9B58C" }} /></div>
+            <button onClick={authGoogleStart} className="press" style={{ width: "100%", padding: "10px 0", borderRadius: 10, background: "#fff", color: "#3c4043", fontWeight: 700, border: "1px solid #CDB98E", cursor: "pointer", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}><GoogleG /> Google로 계속하기</button>
             {mode === "login" && <div style={{ textAlign: "center", marginBottom: 8 }}><button onClick={() => { setMode("reset"); setErr(""); setSent(false); setPw(""); }} style={{ color: T.inkSoft, fontSize: 12, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>비밀번호를 잊으셨나요?</button></div>}
             <div style={{ textAlign: "center", fontSize: 12.5, color: T.inkSoft }}>
               {mode === "login" ? "계정이 없나요? " : "이미 계정이 있나요? "}
@@ -3105,6 +3185,7 @@ export default function App() {
   const [uid, setUid] = useState(null);    // auth uid (데이터 접근)
   const [authOpen, setAuthOpen] = useState(false);
   const [recovery, setRecovery] = useState(null);
+  const [needUser, setNeedUser] = useState(null);   // 최초 구글 로그인 → 아이디 설정 대기
   const [searchOpen, setSearchOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
@@ -3130,9 +3211,11 @@ export default function App() {
   const openAuth = (mode) => { setAuthMode(mode); setAuthOpen(true); };
   useEffect(() => { (async () => {
     const _rec = parseRecoveryHash(); if (_rec) setRecovery(_rec);
+    const _oauth = _rec ? null : parseOAuthHash();
     const raw = await store.get("chess_state_v5");
     if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra); } catch { } }
-    try { if (!_rec) { const acc = await authRestore(); if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); } } } catch { }
+    try { if (!_rec && !_oauth) { const acc = await authRestore(); if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); } } } catch { }
+    if (_oauth) { try { const acc = await authFromHash(_oauth); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } if (acc) { if (acc.username) onAuth(acc); else setNeedUser(acc); } } catch { } }
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
@@ -3207,6 +3290,7 @@ export default function App() {
       </header>
       {authOpen && <AuthModal key={authMode} initialMode={authMode} onClose={() => setAuthOpen(false)} onAuth={onAuth} />}
       {recovery && <NewPasswordModal recovery={recovery} onDone={(acc) => { setRecovery(null); if (acc) onAuth(acc); }} onClose={() => setRecovery(null)} />}
+      {needUser && <UsernameSetupModal account={needUser} onDone={(acc) => { setNeedUser(null); if (acc) onAuth(acc); }} onCancel={async () => { try { await authLogout(); } catch { } setNeedUser(null); setUser(null); setUid(null); }} />}
       {searchOpen && <UserSearchModal me={user} onClose={() => setSearchOpen(false)} />}
       {friendsOpen && <FriendsModal me={user} myUid={uid} onClose={() => setFriendsOpen(false)} />}
       {confirmLogout && (
