@@ -2386,6 +2386,27 @@ async function puzzleSolveCounts() { if (!SB_ON) return {}; try { const rows = a
 async function puzzleShare(p) { if (!SB_ON || !p || !p.id) return; try { await sbUpsert("puzzles", { no: puzzleNo(p.id), data: p }); } catch { } }
 async function puzzleFetch(no) { if (!SB_ON) return null; try { const rows = await sbSelect("puzzles?no=eq." + no + "&select=data&limit=1"); return rows && rows[0] ? rows[0].data : null; } catch { return null; } }
 
+// (15차 기능4) 레벨/XP 시스템 — n레벨→n+1레벨에 필요한 경험치는 피보나치 수열의 n번째 항 × 100
+// (1:100, 2:200, 3:300, 4:500, 5:800, 6:1300 ...). 매번 다시 계산해도 항상 같은 결과가 나오도록 순수 함수로 둔다.
+function fibLevelReq(n) {
+  if (n <= 1) return 100;
+  if (n === 2) return 200;
+  let a = 1, b = 2;
+  for (let i = 3; i <= n; i++) { const c = a + b; a = b; b = c; }
+  return b * 100;
+}
+// 누적 총 경험치(totalXp)로부터 현재 레벨·해당 레벨 내 경험치·다음 레벨까지 필요 경험치를 도출한다.
+function levelFromXp(totalXp) {
+  let level = 1, remaining = Math.max(0, totalXp || 0), req = fibLevelReq(level);
+  while (remaining >= req) { remaining -= req; level++; req = fibLevelReq(level); }
+  return { level, xpInLevel: remaining, xpForNext: req };
+}
+// 퍼즐 한 라인을 해결할 때 얻는 경험치: {13~17 사이의 난수 × (기존 별 보유 수+1.2)}의 정수 부분.
+function rollLineXp(existingStars) {
+  const roll = 13 + Math.floor(Math.random() * 5); // 13~17
+  return Math.floor(roll * (existingStars + 1.2));
+}
+
 // (기능4) 칭호 시스템 — 6개 오프닝 하위 퍼즐 해결 횟수 → 등급 칭호(영구). UX-8: 등급↔수 체계 디자인 대응.
 const TITLE_OPENINGS = [
   { key: "italian", label: "Italian Game", rx: /italian/i },
@@ -2528,6 +2549,19 @@ function RevertSlide({ board, from, to, size = 380, flip = false }) {
   );
 }
 // (기능1) 별 3개(라인) 아이콘 — 해결한 라인 수만큼 채워서 표시
+// (15차 기능4) 헤더에 상시 표기되는 레벨 배지 — 현재 레벨과 다음 레벨까지 남은 경험치를 얇은 진행바로 함께 보여준다.
+function LevelBadge({ totalXp, compact }) {
+  const { level, xpInLevel, xpForNext } = useMemo(() => levelFromXp(totalXp), [totalXp]);
+  const pct = Math.max(0, Math.min(100, Math.round((xpInLevel / xpForNext) * 100)));
+  return (
+    <div className="flex flex-col items-center" style={{ gap: 2, flexShrink: 0 }} title={"Lv." + level + " · " + xpInLevel + "/" + xpForNext + " XP"}>
+      <div style={{ fontSize: compact ? 9.5 : 10.5, fontWeight: 900, color: T.brassHi, padding: compact ? "1px 6px" : "1px 8px", borderRadius: 999, background: "linear-gradient(180deg,#3A2516,#241509)", border: "1px solid " + T.brass, whiteSpace: "nowrap" }}>Lv.{level}</div>
+      <div style={{ width: compact ? 32 : 42, height: 4, borderRadius: 999, background: "rgba(255,255,255,.15)", overflow: "hidden" }}>
+        <div style={{ width: pct + "%", height: "100%", background: T.brass, transition: "width .3s ease" }} />
+      </div>
+    </div>
+  );
+}
 function LineStars({ total, solved }) {
   return (
     <div className="flex items-center gap-1">
@@ -3817,6 +3851,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [solved, setSolved] = useState(new Set());
   const [lineSolves, setLineSolves] = useState({});   // (기능1) { [puzzleId]: string[] } — 라인(tag)별 해결 기록. 전체 라인이 다 모이면 solved로 승격.
+  const [totalXp, setTotalXp] = useState(0);   // (15차 기능4) 누적 경험치 — 레벨/진행률은 levelFromXp로 매번 도출
   const [user, setUser] = useState(null); // username (표시/검색)
   const [uid, setUid] = useState(null);    // auth uid (데이터 접근)
   const [authOpen, setAuthOpen] = useState(false);
@@ -3870,18 +3905,18 @@ export default function App() {
     try { if (!_rec && !_oauth) acc = await authRestore(); } catch { }
     const activeUid = acc ? acc.uid : null;
     const raw = await store.get(localKeyFor(activeUid));
-    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setLineSolves(d.lineSolves || {}); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra);
+    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setLineSolves(d.lineSolves || {}); setTotalXp(d.xp || 0); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra);
       // (UX1) 새로고침해도 현재 탭·집중 학습·퍼즐 진행 상황이 유지되도록 복원
       if (d.tab) setTab(d.tab); if (Array.isArray(d.learnFuture)) setLearnFuture(d.learnFuture); if (d.learnFocus) setLearnFocus(d.learnFocus); if (d.puzzleActive) setPuzzleActive(d.puzzleActive); if (Array.isArray(d.treeFocus)) setTreeFocus(d.treeFocus);
     } catch { } }
-    if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.lineSolves) setLineSolves(pr.lineSolves); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); }
+    if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.lineSolves) setLineSolves(pr.lineSolves); if (pr.xp != null) setTotalXp(pr.xp); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); }
     if (_oauth) { try { const oa = await authFromHash(_oauth); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } if (oa) { if (oa.username) onAuth(oa); else setNeedUser(oa); } } catch { } }
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
   useEffect(() => { if (loaded && uid && user) publishProfile(uid, user, { nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "", firstMoves: profile.firstMoves || null }); }, [loaded, uid, user, profile.nickname, profile.photo, profile.chesscom, currentTitle, profile.firstMoves]);
-  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], lineSolves, deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive, treeFocus })); }, [unlocked, profile, puzzles, solved, lineSolves, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive, treeFocus]);
-  useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], lineSolves, deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, lineSolves, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
+  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], lineSolves, xp: totalXp, deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive, treeFocus })); }, [unlocked, profile, puzzles, solved, lineSolves, totalXp, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive, treeFocus]);
+  useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], lineSolves, xp: totalXp, deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, lineSolves, totalXp, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
   // (기능4) 해결 횟수로부터 새 칭호 획득 → 영구 저장 + 획득 알림(장착 버튼)
   const titleCounts = useMemo(() => familyCounts(puzzles, solved), [puzzles, solved]);
   useEffect(() => {
@@ -3895,13 +3930,13 @@ export default function App() {
   }, [titleCounts, loaded]);
   const equipTitle = useCallback((id) => { setCurrentTitle(id); setToast((t) => (t && t.type === "title" ? null : t)); }, []);
 
-  const onAuth = useCallback((acc) => { if (!acc) return; setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.lineSolves) setLineSolves(pr.lineSolves); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); setAuthOpen(false); }, []);
+  const onAuth = useCallback((acc) => { if (!acc) return; setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.lineSolves) setLineSolves(pr.lineSolves); prevLevelRef.current = null; if (pr.xp != null) setTotalXp(pr.xp); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); setAuthOpen(false); }, []);
   // (UX7) 로그아웃 시 메모리에 남아있던 이전 계정 데이터를 완전히 비운다 — 그대로 두면 로그아웃 화면에서도
   // 잠깐 보이거나, 다음 로그인이 서버에서 못 채운 필드에 이전 계정 값이 남는 사고로 이어질 수 있음.
   const logout = useCallback(() => {
     authLogout();
     setUser(null); setUid(null); setDevOn(false); setConfirmLogout(false);
-    setUnlocked(new Set()); setPuzzles([]); setSolved(new Set()); setLineSolves({}); setDeletedPuzzles(new Set());
+    setUnlocked(new Set()); setPuzzles([]); setSolved(new Set()); setLineSolves({}); prevLevelRef.current = null; setTotalXp(0); setDeletedPuzzles(new Set());
     setEarnedTitles(new Set()); setCurrentTitle(null); setProfile({ nickname: "", chesscom: "" });
     setLearnSans([]); setLearnExtra({}); setTreeFocus([]);
   }, []);
@@ -3922,14 +3957,26 @@ export default function App() {
   const onSolved = useCallback((id) => { const already = solved.has(id); if (!already) setSolved((p) => { const n = new Set(p); n.add(id); return n; }); if (user && !already) { const no = puzzleNo(id); puzzleSolveInc(no).then((c) => { if (c != null) setSolveCounts((m) => ({ ...m, [no]: c })); }); } }, [user, solved]);
   // (기능1) 라인(최선/차선/채택률) 하나를 풀 때마다 기록 — 전체 라인이 다 모이면(별 3개) onSolved로 승격해
   // 기존 "해결완료" 트래킹(칭호·전역 풀이수 등)이 그대로 이어지도록 한다.
+  // (15차 기능4) 새로 해결한 라인마다 경험치를 지급 — 해당 퍼즐에서 "기존에 이미 보유했던 별 수"를 기준으로 계산한다.
   const onLineSolved = useCallback((id, tag) => {
     setLineSolves((prev) => {
-      const cur = new Set(prev[id] || []);
-      if (cur.has(tag)) return prev;
-      cur.add(tag);
-      return { ...prev, [id]: [...cur] };
+      const curArr = prev[id] || [];
+      if (curArr.includes(tag)) return prev;
+      const existingStars = curArr.length;
+      setTotalXp((x) => x + rollLineXp(existingStars));
+      return { ...prev, [id]: [...curArr, tag] };
     });
   }, []);
+  const level = useMemo(() => levelFromXp(totalXp), [totalXp]);
+  const prevLevelRef = useRef(null);
+  useEffect(() => {
+    if (!loaded) return; // 최초 데이터 복원 시점의 레벨 변화는 "레벨업"으로 취급하지 않는다
+    if (prevLevelRef.current != null && level.level > prevLevelRef.current) {
+      setToast({ type: "level", level: level.level });
+      setTimeout(() => setToast((t) => (t && t.type === "level" ? null : t)), 4000);
+    }
+    prevLevelRef.current = level.level;
+  }, [level.level, loaded]);
   useEffect(() => {
     puzzles.forEach((p) => {
       const total = (p.lines && p.lines.length) || 1;
@@ -3968,6 +4015,7 @@ export default function App() {
           <div style={{ fontWeight: 900, fontSize: narrowHeader ? 16 : 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
         <div className="flex items-center" style={{ gap: narrowHeader ? 6 : 10 }}>
+          <LevelBadge totalXp={totalXp} compact={narrowHeader} />
           {user ? (
             <>
               <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800, maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user}</span>
@@ -4012,6 +4060,11 @@ export default function App() {
             <div style={{ background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, padding: 14, borderRadius: 14, border: "1px solid " + T.brass, boxShadow: "0 10px 30px -8px rgba(0,0,0,.7)" }}>
               <div className="flex items-center gap-2" style={{ marginBottom: 10 }}><Mascot name="kokoa" emotion="celebrate" size={58} /><div style={{ fontWeight: 800, fontSize: 13.5, color: T.brassHi }}>새로운 칭호 획득!</div></div>
               <TitleBadge id={toast.id} earned equipped={currentTitle === toast.id} onEquip={equipTitle} />
+            </div>
+          ) : toast.type === "level" ? (
+            <div className="flex items-center gap-2" style={{ background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, padding: "12px 18px", borderRadius: 12, border: "1px solid " + T.brass, boxShadow: "0 10px 30px -8px rgba(0,0,0,.7)" }}>
+              <Mascot name="milku" emotion="celebrate" size={62} />
+              <div><div style={{ fontWeight: 800, fontSize: 13, color: T.brassHi }}>레벨 업!</div><div style={{ fontSize: 12 }}>Lv.{toast.level}이 되었어요.</div></div>
             </div>
           ) : (
             <div className="flex items-center gap-2" style={{ background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, padding: "12px 18px", borderRadius: 12, border: "1px solid " + T.brass, boxShadow: "0 10px 30px -8px rgba(0,0,0,.7)" }}>
