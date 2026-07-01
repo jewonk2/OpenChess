@@ -277,11 +277,17 @@ async function genAdvantageLine(engine, startSans, opts) {
 /* ============================================================ 라이브 Lichess Explorer ============================================================ */
 const _lichessCache = new Map(); // url -> { t, data }
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const LICHESS_STATS_WINDOW_MONTHS = 12; // 전체 누적(수백만 표본) 대신 "최근 N개월간 실제로 두어진 대국"만 집계
+function lichessSinceParam(monthsBack) {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - monthsBack);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+}
 async function fetchLichess(sans, master) {
   const uci = sansToUci(sans).join(",");
   const url = master
     ? "https://explorer.lichess.ovh/masters?play=" + uci + "&moves=14&topGames=0"
-    : LICHESS_API + "?play=" + uci + "&moves=20&topGames=0&recentGames=0&speeds=bullet,blitz,rapid,classical&ratings=1000,1200,1400,1600,1800,2000,2200,2500";
+    : LICHESS_API + "?play=" + uci + "&moves=20&topGames=0&recentGames=0&speeds=bullet,blitz,rapid,classical&ratings=1000,1200,1400,1600,1800,2000,2200,2500&since=" + lichessSinceParam(LICHESS_STATS_WINDOW_MONTHS);
   const hit = _lichessCache.get(url);
   if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.data; // 10분 캐시(되돌리기·재방문 시 재요청·레이트리밋 방지)
   let res = null;
@@ -1087,8 +1093,8 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
         const all = active.moves.map(mk);
         const books = all.filter((m) => m.book);
         const nonbook = all.filter((m) => !m.book);
-        // 일반/마스터: 비이론 수를 최대 9개까지 확보(더보기에서 9개까지 노출). 일반은 엔진 effect가 부족분 보충.
-        const out = isMaster ? [...books, ...nonbook.slice(0, 9)] : [...books, ...nonbook.slice(0, 9)];
+        // Lichess가 응답한 비이론 수는 전부 유지(임의 캡 금지) — 수 체계와 무관하게 표시되는 모든 수가 통계를 가져야 함
+        const out = [...books, ...nonbook];
         setMoves(withExtra(out));
       } catch (_) { /* 차단 시 스냅샷 유지 */ }
     })();
@@ -1137,22 +1143,32 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode) {
     return () => { cancelled = true; };
   }, [key, liveOn, engine.status, moves.length, isMaster, masterEmpty]);
 
-  // (표본) 비이론 수 중 표본수가 없는 수(엔진 보충 등)는 그 수를 둔 뒤 위치의 Lichess 총 게임수로 채움 — 수 목록 갱신에 취소되지 않게 별도 처리
+  // (표본) 비이론 수 중 통계가 없는 수(엔진 보충, 보드에서 직접 둔 수 등)는 그 수를 둔 뒤 위치의 Lichess 총 게임수로 채움.
+  // 캡 없이 "블록에 표시되는 모든 수"를 대상으로 하며, 레이트리밋 방지를 위해 순차 처리한다.
   const statMountedRef = useRef(true);
   useEffect(() => () => { statMountedRef.current = false; }, []);
   const statDoneRef = useRef(new Set());
+  useEffect(() => { statDoneRef.current = new Set(); }, [key]);
   useEffect(() => {
     if (!liveOn) return;
-    const need = moves.filter((m) => !m.book && m.games == null && !statDoneRef.current.has(key + "|" + m.san)).slice(0, 9);
-    need.forEach(async (m) => {
-      statDoneRef.current.add(key + "|" + m.san);
-      try {
-        const child = await fetchLichess([...sans, m.san], false);
-        const g = child && child.posTotal != null ? child.posTotal : null;
-        if (g != null && statMountedRef.current) setMoves((prev) => prev.map((x) => x.san === m.san ? { ...x, games: g } : x));
-      } catch { }
-    });
-  }, [key, moves, liveOn]);
+    const need = moves.filter((m) => !m.book && m.games == null && !statDoneRef.current.has(key + "|" + m.san));
+    if (!need.length) return;
+    let cancelled = false;
+    (async () => {
+      for (const m of need) {
+        if (cancelled || !statMountedRef.current) break;
+        statDoneRef.current.add(key + "|" + m.san);
+        try {
+          const child = await fetchLichess([...sans, m.san], false);
+          const g = child && child.posTotal != null ? child.posTotal : null;
+          if (g != null && !cancelled && statMountedRef.current) {
+            setMoves((prev) => prev.map((x) => x.san === m.san ? { ...x, games: g, adopt: posGames ? +(100 * g / posGames).toFixed(1) : x.adopt } : x));
+          }
+        } catch { }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [key, moves, liveOn, posGames]);
 
   const fallbackEval = useMemo(() => {
     const whites = moves.map((m) => whiteEval(m)).filter((v) => v != null);
@@ -1546,7 +1562,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const [promoPrompt, setPromoPrompt] = useState(null);   // (기능5) 프로모션 선택 대기 {from,to}
   const [lastMascot, setLastMascot] = useState(EXPLAIN[""]);
   const [lastQ, setLastQ] = useState(null);
-  const [showAllNb, setShowAllNb] = useState(false);   // (UX1) 비이론 수 더보기(최대 9)
+  const [showAllNb, setShowAllNb] = useState(false);   // (UX1) 비이론 수 더보기(전체)
   const key = sans.join(" ");
   const board = useMemo(() => boardFromSans(sans), [key]);
   const color = sans.length % 2 === 0 ? "w" : "b";
@@ -1809,7 +1825,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
             ) : (() => {
               const bk = moves.filter((m) => m.book);
               const nb = moves.filter((m) => !m.book);
-              const shownNb = (showAllNb ? nb.slice(0, 9) : nb.slice(0, 3));
+              const shownNb = (showAllNb ? nb : nb.slice(0, 3));
               const shown = [...bk, ...shownNb];
               return (
                 <>

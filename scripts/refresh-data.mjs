@@ -23,6 +23,14 @@ const DELAY_MS = +(process.env.DELAY_MS || 700);
 const SF = process.env.STOCKFISH_PATH || "stockfish";
 const RATINGS = "1600,1800,2000,2200,2500";
 const SPEEDS = "blitz,rapid,classical";
+// 전체 누적(수백만 표본) 대신 "최근 N개월간 실제로 두어진 대국"만 집계 — 앱의 라이브 조회와 동일 기준
+const STATS_WINDOW_MONTHS = +(process.env.STATS_WINDOW_MONTHS || 12);
+function sinceParam(monthsBack) {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - monthsBack);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+}
+const SINCE = sinceParam(STATS_WINDOW_MONTHS);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -56,7 +64,7 @@ const cache = new Map();
 async function explorer(uciList) {
   const play = uciList.join(",");
   if (cache.has(play)) return cache.get(play);
-  const url = `${LICHESS}?play=${play}&moves=12&topGames=0&recentGames=0&speeds=${SPEEDS}&ratings=${RATINGS}`;
+  const url = `${LICHESS}?play=${play}&moves=12&topGames=0&recentGames=0&speeds=${SPEEDS}&ratings=${RATINGS}&since=${SINCE}`;
   for (let attempt = 0; attempt < 5; attempt++) {
     const res = await fetch(url, { headers: { "User-Agent": "opening-trainer/1.0" } });
     if (res.status === 429) { await sleep(60000); continue; }
