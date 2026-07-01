@@ -275,27 +275,43 @@ async function genPunishLine(engine, sans, plies = 3) {
   }
   return out;
 }
+const PIECE_VAL_MAT = { P: 1, N: 3, B: 3, R: 5, Q: 9, K: 0 };
+function materialDiff(board, color) {
+  let d = 0;
+  for (const row of board) for (const p of row) if (p) d += (p.c === color ? 1 : -1) * PIECE_VAL_MAT[p.t];
+  return d;
+}
 /* 풀이 라인을 '해결자(시작 시 둘 차례)가 확실한 우위를 점할 때까지' 연장.
    각 사용자 수 뒤 결과 포지션을 평가(상대 최선 응수 반영)해 사용자 관점 평가가 target(cp) 이상이면 종료.
-   희생 콤비처럼 일시적으로 불리해도 보상이 실현되는 지점까지 이어진다. 항상 사용자 수로 끝맺음. */
+   희생 콤비처럼 일시적으로 불리해도 보상이 실현되는 지점까지 이어진다. 항상 사용자 수로 끝맺음.
+   (기능3) maxPlies를 늘리고, 테마별로 "확실한 이점"의 기준을 더 엄격하게 둘 수 있다:
+   requireMaterialRecovery(희생: 희생한 기물 점수를 실질적으로 회복해야 종료) / requireCapture(응징: 실제로
+   기물을 잡아내는 수가 나와야 종료) — 둘 다 없으면 평가치 target만으로 판단(우위 점하기). */
 async function genAdvantageLine(engine, startSans, opts) {
-  const { maxPlies = 6, target = 160 } = opts || {};
+  const { maxPlies = 8, target = 160, requireMaterialRecovery = false, requireCapture = false } = opts || {};
   const userWhite = startSans.length % 2 === 0;   // 시작 시 둘 차례 = 해결자
+  const userColor = userWhite ? "w" : "b";
+  const startMat = materialDiff(boardFromSans(startSans), userColor);
   let cur = startSans.slice(); const out = [];
+  let sawUserCapture = false;
   for (let i = 0; i < maxPlies; i++) {
     const ev = await engine.evaluate(sansToFen(cur), 6);
     if (!ev || !ev.best) break;
     const movingWhite = cur.length % 2 === 0;
     const san = uciToSan(boardFromSans(cur), ev.best, movingWhite ? "w" : "b");
     if (!san) break;
+    const isUserMove = movingWhite === userWhite;
+    if (isUserMove && san.includes("x")) sawUserCapture = true;
     out.push(san); cur = [...cur, san];
-    if (movingWhite === userWhite) {              // 방금 둔 것이 사용자 수 → 우위 판정
+    if (isUserMove) {              // 방금 둔 것이 사용자 수 → 우위 판정
       const ev2 = await engine.evaluate(sansToFen(cur), 6);
       let userCp;
       if (!ev2) userCp = 0;
       else if (ev2.mate != null) { if (ev2.mate < 0) break; userCp = -100000; }   // 상대가 메이트당함 = 사용자 승
       else userCp = -(ev2.cp || 0);               // ev2는 상대 관점 → 부호 반전
-      if (userCp >= target) break;
+      const matOk = !requireMaterialRecovery || materialDiff(boardFromSans(cur), userColor) >= Math.min(0, startMat);
+      const capOk = !requireCapture || sawUserCapture;
+      if (userCp >= target && matOk && capOk) break;
     }
   }
   if (out.length) { const lastMoverWhite = (startSans.length + out.length - 1) % 2 === 0; if (lastMoverWhite !== userWhite) out.pop(); }   // 사용자 수로 끝맺음
@@ -1552,7 +1568,7 @@ function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canA
       if (curated) { onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: curated.opening, setupSans: [...sans], mistakeSan: san, solution: curated.line, steps: curated.steps }); return; }
       if (engine && engine.status === "ready") {
         let cancelled = false;
-        genAdvantageLine(engine, [...sans, san], { target: 170 }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+        genAdvantageLine(engine, [...sans, san], { target: 170, maxPlies: 8, requireCapture: true }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
         return () => { cancelled = true; };
       }
       return;
@@ -1560,14 +1576,14 @@ function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canA
     // 부정확한 수 → 우위 점하기 (실수 응징과 동일 방식)
     if (kind === "inaccuracy" && engine && engine.status === "ready") {
       let cancelled = false;
-      genAdvantageLine(engine, [...sans, san], { target: 120 }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+      genAdvantageLine(engine, [...sans, san], { target: 220, maxPlies: 8 }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
       return () => { cancelled = true; };
     }
     // 탁월한 수 → 기물 희생하기 (직전 수 애니메이션 후 탁월한 수 + 보상 실현까지 이어지는 라인)
     if (kind === "brilliant" && sans.length >= 1 && engine && engine.status === "ready") {
       const op = title || "오프닝";
       let cancelled = false;
-      genAdvantageLine(engine, [...sans, san], { target: 110 }).then((line) => {
+      genAdvantageLine(engine, [...sans, san], { target: 110, maxPlies: 8, requireMaterialRecovery: true }).then((line) => {
         if (!cancelled) onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [san, ...line], steps: [], auto: true });
       });
       return () => { cancelled = true; };
