@@ -1288,13 +1288,22 @@ function brilliantArrows(sans, san) {
   return out.slice(0, 6);
 }
 
-function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, canEdit, canAdd, bumpContent, onJump, puzzles, onOpenPuzzle }) {
-  const node = snapNode(sans);
-  const title = m.name || (node && node.opening ? node.opening.name : null);
+// (UI/UX) 집중학습을 별개의 전체 창으로 띄우지 않고 체스보드 하단 UI에 병합하기 위해,
+// 상태/부수효과는 하나의 훅으로 모으고(퍼즐 자동저장 등 중복 실행 방지), 렌더링만
+// FocusHead(보드 하단 · 주요 분기점/현재 수 자리)와 FocusBody(수 블록 자리)로 나눈다.
+function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canAdd, bumpContent, puzzles }) {
+  const active = !!focus;
+  const sans = active ? focus.sans : [];
+  const san = active ? focus.san : "";
+  const m = active ? focus.m : {};
+  const ply = active ? focus.ply : 0;
+  const node = active ? snapNode(sans) : null;
+  const title = active ? (m.name || (node && node.opening ? node.opening.name : null)) : null;
+  const sansKey = sans.join(" ");
   const [liveKind, setLiveKind] = useState(null);
-  const kind = liveKind || m.kind || (m.book ? "book" : "good");
   useEffect(() => {
     let cancel = false; setLiveKind(null);
+    if (!active) return;
     if (m.book || (m.kind && m.kind !== "good" && m.kind !== "pending")) return;   // 이론 수 또는 이미 품질 있음
     if (!engine || engine.status !== "ready") return;
     (async () => {
@@ -1313,26 +1322,30 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
       if (!cancel) setLiveKind(k);
     })();
     return () => { cancel = true; };
-  }, [sans, san, m.kind, m.book, engine && engine.status]);
-  const evTxt = m.live ? fmtEvalCp(m.live.cp, m.live.mate) : (m.evalCp != null || m.mate != null ? fmtEvalCp(m.evalCp, m.mate) : null);
-  const extra = kind === "brilliant" ? brilliantArrows(sans, san) : [];
-  const mkKey = sans.join(" ") + "|" + san;
-  const ownExplain = CONTENT.explains[mkKey];
-  const explain = explainMove(sans, san);
+  }, [active, sansKey, san, active && m.kind, active && m.book, engine && engine.status]);
+  const kind = active ? (liveKind || m.kind || (m.book ? "book" : "good")) : null;
+  const evTxt = active ? (m.live ? fmtEvalCp(m.live.cp, m.live.mate) : (m.evalCp != null || m.mate != null ? fmtEvalCp(m.evalCp, m.mate) : null)) : null;
+  const extraArrows = active && kind === "brilliant" ? brilliantArrows(sans, san) : [];
+  const mkKey = active ? sansKey + "|" + san : "";
+  const ownExplain = active ? CONTENT.explains[mkKey] : null;
+  const explain = active ? explainMove(sans, san) : null;
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(ownExplain || "");
-  const canEditExpl = canEdit || (canAdd && !ownExplain);
-  const saveExpl = async () => { CONTENT.explains[mkKey] = draft.trim(); await bumpContent(); setEditing(false); };
-  const delExpl = async () => { delete CONTENT.explains[mkKey]; await bumpContent(); setEditing(false); setDraft(""); };
-  const isPunishable = ["mistake", "blunder"].includes(kind);
-  const curated = isPunishable ? punishFor(sans, san) : null;
-  const stats = chesscom && chesscom.status === "ready" ? chesscom.analyze([...sans, san]) : null;
+  const [draft, setDraft] = useState("");
   const [showExpl, setShowExpl] = useState(false);
-  // (UI1) 개발자: 수 이름·키워드 편집 + 이론 수에서 삭제
-  const editKey = sans.join(" ");
   const [devEdit, setDevEdit] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [kwDraft, setKwDraft] = useState([]);
+  const [addedTheory, setAddedTheory] = useState(false);
+  // 집중학습 대상 수가 바뀌면(=예전엔 FocusMode가 다시 마운트되던 상황) 이전 수의 편집 UI 상태를 초기화한다.
+  useEffect(() => { if (!active) return; setEditing(false); setDraft(""); setShowExpl(false); setDevEdit(false); setNameDraft(""); setKwDraft([]); setAddedTheory(false); }, [active, sansKey, san]);
+  const canEditExpl = canEdit || (canAdd && !ownExplain);
+  const saveExpl = async () => { CONTENT.explains[mkKey] = draft.trim(); await bumpContent(); setEditing(false); };
+  const delExpl = async () => { delete CONTENT.explains[mkKey]; await bumpContent(); setEditing(false); setDraft(""); };
+  const isPunishable = active && ["mistake", "blunder"].includes(kind);
+  const curated = isPunishable ? punishFor(sans, san) : null;
+  const stats = active && chesscom && chesscom.status === "ready" ? chesscom.analyze([...sans, san]) : null;
+  // (UI1) 개발자: 수 이름·키워드 편집 + 이론 수에서 삭제
+  const editKey = sansKey;
   const openDevEdit = () => {
     let parentName = "";
     if (sans.length) { const pj = sans.slice(0, -1).join(" "); const last = sans[sans.length - 1]; const ov = nameOverride(pj, last); if (ov) parentName = ov; else { const nd = snapNode(sans.slice(0, -1)); const mm = nd && nd.moves.find((x) => stripSuffix(x.san) === stripSuffix(last)); parentName = (mm && mm.name) || ""; } }
@@ -1346,7 +1359,7 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
   const [analyzing, setAnalyzing] = useState(false);   // (UI8) 실수 분석 진행 표시
   useEffect(() => {
     setMistakes([]); setAnalyzing(false);
-    if (!engine || engine.status !== "ready" || !stats || !stats.lines || !stats.lines.length) return;
+    if (!active || !engine || engine.status !== "ready" || !stats || !stats.lines || !stats.lines.length) return;
     let cancelled = false;
     setAnalyzing(true);
     (async () => {
@@ -1371,10 +1384,10 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
       if (!cancelled) { found.sort((a, b) => b.count - a.count); setMistakes(found.slice(0, 5)); setAnalyzing(false); }
     })();
     return () => { cancelled = true; setAnalyzing(false); };
-  }, [sans.join(" "), san, engine.status, chesscom && chesscom.status, stats && stats.total]);
+  }, [active, sansKey, san, engine && engine.status, chesscom && chesscom.status, stats && stats.total]);
   useEffect(() => {
-    if (!onSavePuzzle) return;
-    const id = sans.join(" ") + "|" + san;
+    if (!active || !onSavePuzzle) return;
+    const id = sansKey + "|" + san;
     // 실수/블런더 → 실수 응징하기
     if (isPunishable) {
       if (curated) { onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: curated.opening, setupSans: [...sans], mistakeSan: san, solution: curated.line, steps: curated.steps }); return; }
@@ -1400,14 +1413,12 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
       });
       return () => { cancelled = true; };
     }
-  }, [sans.join(" "), san, kind, engine && engine.status]);
-  const punish = curated;
-  const baseId = sans.join(" ") + "|" + san;
-  const expectedPuzzleId = kind === "brilliant" ? "sac|" + baseId : kind === "inaccuracy" ? "adv|" + baseId : (["mistake", "blunder"].includes(kind) ? baseId : null);
+  }, [active, sansKey, san, kind, engine && engine.status]);
+  const baseId = active ? sansKey + "|" + san : "";
+  const expectedPuzzleId = active ? (kind === "brilliant" ? "sac|" + baseId : kind === "inaccuracy" ? "adv|" + baseId : (["mistake", "blunder"].includes(kind) ? baseId : null)) : null;
   const existingPuzzle = (expectedPuzzleId && puzzles) ? puzzles.find((p) => p.id === expectedPuzzleId) : null;
   // (UI1) 집중 학습 중인 수를 이론 수로 등록 — 스냅샷의 기존 이론 수와 구분 없이 동일하게 취급됨(기능3)
-  const posKey = sans.join(" ");
-  const [addedTheory, setAddedTheory] = useState(false);
+  const posKey = sansKey;
   const addAsTheory = async () => {
     if (!CONTENT.treeAdds[posKey]) CONTENT.treeAdds[posKey] = [];
     const existing = CONTENT.treeAdds[posKey].find((x) => x.san === san);
@@ -1415,32 +1426,62 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
     await bumpContent();
     setAddedTheory(true);
   };
-  const isTheory = m.book || addedTheory;
+  const isTheory = active && (m.book || addedTheory);
+  return {
+    active, sans, san, m, ply, title, kind, evTxt, extraArrows, explain, ownExplain,
+    editing, setEditing, draft, setDraft, canEditExpl, saveExpl, delExpl, explainLong,
+    showExpl, setShowExpl, editKey, devEdit, setDevEdit, nameDraft, setNameDraft, kwDraft, setKwDraft,
+    openDevEdit, saveMeta, toggleUnbook, toggleKw, isPunishable, curated, stats, mistakes, analyzing,
+    expectedPuzzleId, existingPuzzle, addAsTheory, isTheory, canEdit, canAdd, bumpContent, engine, chesscom,
+  };
+}
+// 체스보드 바로 아래(왼쪽 칼럼)에 자리 — 뒤로가기 + 주요 분기점 + "현재 수" 헤더에 해당하는 정보.
+function FocusHead({ fa, onBack, onOpenPuzzle }) {
+  if (!fa.active) return null;
+  const { san, ply, m, title, kind, evTxt, isTheory, canEdit, canAdd, addAsTheory, expectedPuzzleId, existingPuzzle, sans, bumpContent } = fa;
   return (
     <div>
       <div className="flex items-center justify-between" style={{ marginBottom: 10, gap: 8 }}>
-        <button onClick={onBack} className="press" style={{ width: 36, height: 36, borderRadius: 10, background: T.ebony2, color: T.ivoryHi, border: "1px solid #000", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><ArrowLeft size={18} /></button>
+        <button onClick={onBack} className="press" title="집중학습 종료" style={{ width: 36, height: 36, borderRadius: 10, background: T.ebony2, color: T.ivoryHi, border: "1px solid #000", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}><ArrowLeft size={18} /></button>
         <div className="flex items-center gap-2">
           {(canEdit || canAdd) && !isTheory && <button onClick={addAsTheory} className="press" title="이론 수로 추가" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 10, background: T.ebony2, color: T.brassHi, fontWeight: 800, fontSize: 12.5, border: "1px solid #000", cursor: "pointer" }}><Book size={14} /> 이론 수로 추가</button>}
           {expectedPuzzleId && onOpenPuzzle && <button onClick={() => onOpenPuzzle(expectedPuzzleId, existingPuzzle)} className="press" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 15px", borderRadius: 10, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: "0 3px 0 #7A5E22" }}><Play size={14} /> 퍼즐 풀기</button>}
         </div>
       </div>
-      {/* 헤더: 아이콘 · 수/이름(크게) · 평가치 */}
-      <div className="flex items-center gap-3" style={{ marginBottom: 12 }}>
-        <CircleBadge kind={kind} big />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 30, fontWeight: 800, color: T.ivoryHi, lineHeight: 1.05, textShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{moveNumber(ply)}{m.san}</div>
-          {title && <div style={{ fontSize: 16, color: T.brassHi, fontWeight: 800, marginTop: 4, lineHeight: 1.25 }}>{title}</div>}
+      {(canEdit || canAdd) && <BranchBanner sentKey={sans.join(" ")} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} />}
+      <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "16px 18px", border: "1px solid #DCCBA8", boxShadow: "0 3px 0 #D7C19A" }}>
+        <div className="flex items-center gap-3">
+          <CircleBadge kind={kind} big />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 26, fontWeight: 800, color: T.ink, lineHeight: 1.05 }}>{moveNumber(ply)}{m.san}</div>
+            {title && <div style={{ fontSize: 14, color: T.cocoa || "#5A3A22", fontWeight: 800, marginTop: 4, lineHeight: 1.25 }}>{title}</div>}
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 18, fontWeight: 800, color: QCOLOR[kind] }}>{evTxt || (kind === "book" ? "이론" : "—")}</div>
+            <div style={{ fontSize: 11, color: QCOLOR[kind], fontWeight: 700 }}>{QLABEL[kind]}</div>
+          </div>
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 20, fontWeight: 800, color: QCOLOR[kind] }}>{evTxt || (kind === "book" ? "이론" : "—")}</div>
-          <div style={{ fontSize: 11, color: QCOLOR[kind], fontWeight: 700 }}>{QLABEL[kind]}</div>
-        </div>
+        <div className="flex flex-wrap gap-1" style={{ marginTop: 10 }}>{deriveKeywords(m).map((k) => KW[k] && <span key={k} style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}</div>
       </div>
+    </div>
+  );
+}
+// 수 블록 자리(오른쪽 칼럼)에 자리 — 미니 애니메이션 · 해설 · 개발자 편집 · 퍼즐 안내 · chess.com 통계.
+function FocusBody({ fa, onJump }) {
+  if (!fa.active) return null;
+  const {
+    sans, san, m, ply, title, kind, extraArrows, explain, ownExplain, editing, setEditing, draft, setDraft,
+    canEditExpl, saveExpl, delExpl, explainLong, showExpl, setShowExpl, editKey, devEdit, setDevEdit,
+    nameDraft, setNameDraft, kwDraft, openDevEdit, saveMeta, toggleUnbook, toggleKw, isPunishable, curated,
+    stats, mistakes, analyzing, canEdit, canAdd, engine, chesscom,
+  } = fa;
+  const punish = curated;
+  return (
+    <div>
       {/* 미니보드(좌) + 해설(우) */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flexShrink: 0 }}>
-          <AnimatedMove sans={sans} san={san} size={200} extraArrows={extra} />
+          <AnimatedMove sans={sans} san={san} size={200} extraArrows={extraArrows} />
           {kind === "brilliant" && <p style={{ fontSize: 10, color: T.inkSoft, textAlign: "center", marginTop: 4, lineHeight: 1.4, maxWidth: 150 }}><span style={{ color: T.blunder }}>빨강</span> 잡힐 경로 · <span style={{ color: T.brass }}>금색</span> 노리는 표적</p>}
         </div>
         <div style={{ flex: 1, minWidth: 180 }}>
@@ -1462,8 +1503,6 @@ function FocusMode({ sans, san, m, ply, onBack, chesscom, onSavePuzzle, engine, 
           </div>
         </div>
       </div>
-      {/* 키워드 */}
-      <div className="flex flex-wrap gap-1" style={{ marginTop: 12 }}>{deriveKeywords(m).map((k) => KW[k] && <span key={k} style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}</div>
       {(canEdit || canAdd) && (
         <div style={{ background: "linear-gradient(180deg,#3A2516,#241509)", border: "1px solid " + T.brass, borderRadius: 12, padding: 12, marginTop: 12 }}>
           <div className="flex items-center justify-between" style={{ marginBottom: devEdit ? 8 : 0 }}>
@@ -1764,9 +1803,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const curKws = (curMove && curMove.book) ? deriveKeywords(curMove) : (kwOverride(parentKey, lastSan) || []);   // 비이론 수는 개발자 키워드만
   const curGames = curMove && curMove.games != null ? curMove.games : null;
 
-  if (focus) return (
-    <FocusMode sans={focus.sans} san={focus.san} m={focus.m} ply={focus.ply} onBack={exitFocus} chesscom={chesscom} onSavePuzzle={onSavePuzzle} engine={engine} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} onJump={enterFocusAt} puzzles={puzzles} onOpenPuzzle={onOpenPuzzle} />
-  );
+  const fa = useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canAdd, bumpContent, puzzles });
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
@@ -1796,83 +1833,94 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <NavBtn onClick={() => setFlip((v) => !v)} active={flip}><ArrowUpDown size={17} /></NavBtn>
-              <NavBtn onClick={reset} disabled={!sans.length}><RotateCcw size={16} /></NavBtn>
+              <NavBtn onClick={reset} disabled={!sans.length || !!focus}><RotateCcw size={16} /></NavBtn>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <NavBtn onClick={back} disabled={!sans.length}><ChevronLeft size={17} /></NavBtn>
-              <NavBtn onClick={fwd} disabled={!future.length}><ChevronRight size={17} /></NavBtn>
+              <NavBtn onClick={back} disabled={!sans.length || !!focus}><ChevronLeft size={17} /></NavBtn>
+              <NavBtn onClick={fwd} disabled={!future.length || !!focus}><ChevronRight size={17} /></NavBtn>
             </div>
           </div>
+        </div>
+        {/* (UI) 체스보드 하단 — 주요 분기점 + 현재 수 블록(비어있던 공간을 채움). 집중학습 중엔 같은 자리에 뒤로가기+분기점+수 정보가 병합되어 표시된다. */}
+        <div style={{ marginTop: 16 }}>
+          {focus ? <FocusHead fa={fa} onBack={exitFocus} onOpenPuzzle={onOpenPuzzle} /> : (
+            <>
+              {/* (UI2) 코치 말풍선 + (UI6) 좌상단 "주요 분기점" 라벨 */}
+              <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "12px 14px", border: "1px solid #DCCBA8", marginBottom: 16, boxShadow: "0 3px 0 #D7C19A" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.brassHi, fontSize: 10, fontWeight: 800, letterSpacing: ".02em", padding: "3px 9px", borderRadius: 8, marginBottom: 8 }}><Cpu size={12} /> 주요 분기점</span>
+                <p style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.6, margin: 0 }}>{branchFor(key) || lastMascot}</p>
+                <span style={{ position: "absolute", bottom: -7, right: 30, width: 13, height: 13, background: T.paper, borderRight: "1px solid #DCCBA8", borderBottom: "1px solid #DCCBA8", transform: "rotate(45deg)" }} />
+              </div>
+              {(canEdit || canAdd) && <BranchBanner sentKey={key} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} />}
+              {/* 헤더(현재 수) 블록 — 마스코트 우상단 + 학습 버튼 */}
+              <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "16px 18px", border: "1px solid #DCCBA8", boxShadow: "0 3px 0 #D7C19A" }}>
+                <div style={{ position: "absolute", top: 6, right: 10 }}><Mascot name={ply % 2 === 0 ? "milku" : "kokoa"} emotion={(lastQ && lastQ.kind ? mascotForKind(lastQ.kind) : ["milku", "wink"])[1]} size={58} /></div>
+                <div className="flex items-center gap-2" style={{ paddingRight: 64 }}><Sparkles size={15} style={{ color: T.brass }} /><h2 style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{stageTitle}</h2></div>
+                <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 8, letterSpacing: ".02em" }}>{fmtFull(posGames)}</div>
+                {lastSan && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #E4D5B6" }}>
+                    <div className="flex items-center flex-wrap" style={{ gap: 13 }}>
+                      {curKind && QCOLOR[curKind] && <CircleBadge kind={curKind} />}
+                      <span style={{ fontSize: 16, fontWeight: 800, color: T.ink, letterSpacing: ".02em" }}>{moveNumber(ply - 1)}{lastSan}</span>
+                      {curName && <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink, wordBreak: "keep-all" }}>{curName}</span>}
+                      <button onClick={() => enterFocusAt(sans.slice(0, -1), lastSan)} className="press" style={{ marginLeft: "auto", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 11px", borderRadius: 8, background: T.ebony2, color: T.brassHi, fontSize: 11, fontWeight: 800, border: "1px solid #000", cursor: "pointer" }}><Play size={11} /> 학습</button>
+                    </div>
+                    <div className="flex items-center flex-wrap" style={{ gap: 16, marginTop: 12 }}>
+                      {curKind && <span style={{ fontSize: 12, fontWeight: 800, color: QCOLOR[curKind] || T.inkSoft }}>{QLABEL[curKind]}</span>}
+                      {curGames != null && <span style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(curGames)}회 진행</span>}
+                    </div>
+                    {curKws.length > 0 && (
+                      <div className="flex flex-wrap" style={{ gap: 6, marginTop: 10 }}>
+                        {curKws.map((k) => KW[k] && <span key={k} title={KW[k].desc} style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".04em", padding: "2px 7px", borderRadius: 4, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {explainFor(sans) && <p style={{ color: T.inkSoft, fontSize: 12, marginTop: 12, lineHeight: 1.6 }}>{explainFor(sans)}</p>}
+              </div>
+            </>
+          )}
         </div>
       </div>
       <div>
         <div>
-            {/* (UI2) 코치 말풍선 + (UI6) 좌상단 "주요 분기점" 라벨 */}
-            <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "12px 14px", border: "1px solid #DCCBA8", marginBottom: 16, boxShadow: "0 3px 0 #D7C19A" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.brassHi, fontSize: 10, fontWeight: 800, letterSpacing: ".02em", padding: "3px 9px", borderRadius: 8, marginBottom: 8 }}><Cpu size={12} /> 주요 분기점</span>
-              <p style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.6, margin: 0 }}>{branchFor(key) || lastMascot}</p>
-              <span style={{ position: "absolute", bottom: -7, right: 30, width: 13, height: 13, background: T.paper, borderRight: "1px solid #DCCBA8", borderBottom: "1px solid #DCCBA8", transform: "rotate(45deg)" }} />
-            </div>
-            {(canEdit || canAdd) && <BranchBanner sentKey={key} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} />}
-            {/* 헤더(현재 수) 블록 — 마스코트 우상단 + 학습 버튼 */}
-            <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "16px 18px", border: "1px solid #DCCBA8", marginBottom: 14, boxShadow: "0 3px 0 #D7C19A" }}>
-              <div style={{ position: "absolute", top: 6, right: 10 }}><Mascot name={ply % 2 === 0 ? "milku" : "kokoa"} emotion={(lastQ && lastQ.kind ? mascotForKind(lastQ.kind) : ["milku", "wink"])[1]} size={58} /></div>
-              <div className="flex items-center gap-2" style={{ paddingRight: 64 }}><Sparkles size={15} style={{ color: T.brass }} /><h2 style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{stageTitle}</h2></div>
-              <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 8, letterSpacing: ".02em" }}>{fmtFull(posGames)}</div>
-              {lastSan && (
-                <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #E4D5B6" }}>
-                  <div className="flex items-center flex-wrap" style={{ gap: 13 }}>
-                    {curKind && QCOLOR[curKind] && <CircleBadge kind={curKind} />}
-                    <span style={{ fontSize: 16, fontWeight: 800, color: T.ink, letterSpacing: ".02em" }}>{moveNumber(ply - 1)}{lastSan}</span>
-                    {curName && <span style={{ fontSize: 12.5, fontWeight: 600, color: T.ink, wordBreak: "keep-all" }}>{curName}</span>}
-                    <button onClick={() => enterFocusAt(sans.slice(0, -1), lastSan)} className="press" style={{ marginLeft: "auto", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 11px", borderRadius: 8, background: T.ebony2, color: T.brassHi, fontSize: 11, fontWeight: 800, border: "1px solid #000", cursor: "pointer" }}><Play size={11} /> 학습</button>
-                  </div>
-                  <div className="flex items-center flex-wrap" style={{ gap: 16, marginTop: 12 }}>
-                    {curKind && <span style={{ fontSize: 12, fontWeight: 800, color: QCOLOR[curKind] || T.inkSoft }}>{QLABEL[curKind]}</span>}
-                    {curGames != null && <span style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(curGames)}회 진행</span>}
-                  </div>
-                  {curKws.length > 0 && (
-                    <div className="flex flex-wrap" style={{ gap: 6, marginTop: 10 }}>
-                      {curKws.map((k) => KW[k] && <span key={k} title={KW[k].desc} style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".04em", padding: "2px 7px", borderRadius: 4, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}
-                    </div>
-                  )}
+          {focus ? <FocusBody fa={fa} onJump={enterFocusAt} /> : (
+            <>
+              <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginBottom: 10 }}>
+                <div className="inline-flex" style={{ borderRadius: 9, background: "rgba(0,0,0,.06)", padding: 3, gap: 3 }} title="통계 범위: 전체 유저 대국 / 마스터 대국만">
+                  <button onClick={() => setMode("normal")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: mode === "normal" ? T.ebony2 : "transparent", color: mode === "normal" ? T.brassHi : T.inkSoft }}>전체</button>
+                  <button onClick={() => setMode("master")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: mode === "master" ? T.ebony2 : "transparent", color: mode === "master" ? T.brassHi : T.inkSoft }}>마스터</button>
                 </div>
-              )}
-              {explainFor(sans) && <p style={{ color: T.inkSoft, fontSize: 12, marginTop: 12, lineHeight: 1.6 }}>{explainFor(sans)}</p>}
-            </div>
-            <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginBottom: 10 }}>
-              <div className="inline-flex" style={{ borderRadius: 9, background: "rgba(0,0,0,.06)", padding: 3, gap: 3 }} title="통계 범위: 전체 유저 대국 / 마스터 대국만">
-                <button onClick={() => setMode("normal")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: mode === "normal" ? T.ebony2 : "transparent", color: mode === "normal" ? T.brassHi : T.inkSoft }}>전체</button>
-                <button onClick={() => setMode("master")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: mode === "master" ? T.ebony2 : "transparent", color: mode === "master" ? T.brassHi : T.inkSoft }}>마스터</button>
+                <div className="inline-flex" style={{ borderRadius: 9, background: "rgba(0,0,0,.06)", padding: 3, gap: 3 }} title="비이론 수 정렬 기준">
+                  <button onClick={() => setSortBy("eval")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: sortBy === "eval" ? T.ebony2 : "transparent", color: sortBy === "eval" ? T.brassHi : T.inkSoft }}>평가치순</button>
+                  <button onClick={() => setSortBy("adopt")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: sortBy === "adopt" ? T.ebony2 : "transparent", color: sortBy === "adopt" ? T.brassHi : T.inkSoft }}>채택률순</button>
+                </div>
               </div>
-              <div className="inline-flex" style={{ borderRadius: 9, background: "rgba(0,0,0,.06)", padding: 3, gap: 3 }} title="비이론 수 정렬 기준">
-                <button onClick={() => setSortBy("eval")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: sortBy === "eval" ? T.ebony2 : "transparent", color: sortBy === "eval" ? T.brassHi : T.inkSoft }}>평가치순</button>
-                <button onClick={() => setSortBy("adopt")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: sortBy === "adopt" ? T.ebony2 : "transparent", color: sortBy === "adopt" ? T.brassHi : T.inkSoft }}>채택률순</button>
-              </div>
-            </div>
-            {moves.length === 0 ? (
-              <div style={{ background: T.paper, borderRadius: 12, padding: 16, border: "1px dashed #C9B58C", textAlign: "center" }}>
-                <div style={{ display: "flex", justifyContent: "center" }}><Mascot name="milku" emotion="sleep" size={92} /></div>
-                <p style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>제안된 수가 없어요. 보드에서 직접 두면 그 수가 평가되어 블록으로 추가됩니다.</p>
-              </div>
-            ) : (() => {
-              const bk = moves.filter((m) => m.book);
-              const nb = moves.filter((m) => !m.book);
-              const shownNb = (showAllNb ? nb : nb.slice(0, 3));
-              const shown = [...bk, ...shownNb];
-              return (
-                <>
-                  {shown.map((m) => <MoveTile key={m.san} m={m} ply={ply} posGames={posGames} onClick={() => go(m.san, false)} onFocus={() => enterFocus(m)} />)}
-                  {nb.length > 3 && (
-                    <button onClick={() => setShowAllNb((v) => !v)} className="press" style={{ width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 10, border: "1px dashed " + T.brass, background: "transparent", color: T.brassHi, fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
-                      <ChevronRight size={14} style={{ transform: showAllNb ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform .15s" }} />
-                      {showAllNb ? "접기" : "더보기"}
-                    </button>
-                  )}
-                </>
-              );
-            })()}
-          </div>
+              {moves.length === 0 ? (
+                <div style={{ background: T.paper, borderRadius: 12, padding: 16, border: "1px dashed #C9B58C", textAlign: "center" }}>
+                  <div style={{ display: "flex", justifyContent: "center" }}><Mascot name="milku" emotion="sleep" size={92} /></div>
+                  <p style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>제안된 수가 없어요. 보드에서 직접 두면 그 수가 평가되어 블록으로 추가됩니다.</p>
+                </div>
+              ) : (() => {
+                const bk = moves.filter((m) => m.book);
+                const nb = moves.filter((m) => !m.book);
+                const shownNb = (showAllNb ? nb : nb.slice(0, 3));
+                const shown = [...bk, ...shownNb];
+                return (
+                  <>
+                    {shown.map((m) => <MoveTile key={m.san} m={m} ply={ply} posGames={posGames} onClick={() => go(m.san, false)} onFocus={() => enterFocus(m)} />)}
+                    {nb.length > 3 && (
+                      <button onClick={() => setShowAllNb((v) => !v)} className="press" style={{ width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 10, border: "1px dashed " + T.brass, background: "transparent", color: T.brassHi, fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+                        <ChevronRight size={14} style={{ transform: showAllNb ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform .15s" }} />
+                        {showAllNb ? "접기" : "더보기"}
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
