@@ -715,7 +715,6 @@ function tierOf(loss) {
 }
 const QLABEL = { brilliant: "탁월한 수", best: "최선의 수", only: "유일한 수", excellent: "우수한 수", good: "좋은 수", inaccuracy: "부정확한 수", mistake: "실수", blunder: "블런더", book: "이론적인 수", pending: "분석 중" };
 const QCOLOR = { brilliant: T.brilliant, best: T.best, only: T.only, excellent: T.excellent, good: T.good, inaccuracy: T.inaccuracy, mistake: T.mistake, blunder: T.blunder, book: T.book, pending: T.inkSoft };
-const QSYM = { brilliant: "!!", best: "★", only: "!", excellent: "👍", good: "✓", inaccuracy: "?!", mistake: "?", blunder: "??", book: "▦" };
 const KW = {
   "NORMAL": { bg: "#E3EDD9", fg: "#3F5B33", desc: "가장 일반적으로 두어지는 수" },
   "TOP LEVEL": { bg: "#F3E6C2", fg: "#7A5A14", desc: "마스터가 압도적으로 선택" },
@@ -899,7 +898,8 @@ function Board({ board, flip, size = 336, arrows = [], legalTargets = [], select
                   {lastQ && lastQ.to && lastQ.to[0] === r && lastQ.to[1] === c && QCOLOR[lastQ.kind] && (
                     <>
                       <div style={{ position: "absolute", inset: 0, background: QCOLOR[lastQ.kind], opacity: 0.5, pointerEvents: "none" }} />
-                      <div style={{ position: "absolute", top: -cell * 0.18, right: -cell * 0.18, width: cell * 0.44, height: cell * 0.44, borderRadius: "50%", background: QCOLOR[lastQ.kind], color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: cell * (lastQ.kind === "brilliant" || lastQ.kind === "blunder" || lastQ.kind === "inaccuracy" ? 0.17 : 0.22), fontWeight: 900, border: "2px solid #fff", boxShadow: "0 2px 5px rgba(0,0,0,.55)", pointerEvents: "none", zIndex: 6 }}>{QSYM[lastQ.kind] || ""}</div>
+                      {/* (UI5) 수 블록과 동일한 아이콘(badgeIcon)으로 통일 — 예전엔 QSYM 텍스트/이모지를 따로 썼음 */}
+                      <div style={{ position: "absolute", top: -cell * 0.18, right: -cell * 0.18, width: cell * 0.44, height: cell * 0.44, borderRadius: "50%", background: QCOLOR[lastQ.kind], color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, border: "2px solid #fff", boxShadow: "0 2px 5px rgba(0,0,0,.55)", pointerEvents: "none", zIndex: 6 }}>{badgeIcon(lastQ.kind, cell * 0.22)}</div>
                     </>
                   )}
                   {wrongAt && wrongAt[0] === r && wrongAt[1] === c && (
@@ -2244,9 +2244,13 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
     if (idx === 0 || wrong || reply || intro) return null;
     const prevCur = [...setup, ...puzzle.solution.slice(0, idx - 1)];
     const mvSan = puzzle.solution[idx - 1];
-    const info = sanSrc(boardFromSans(prevCur), stripSuffix(mvSan), (prevCur.length % 2 === 0) ? "w" : "b");
-    return info && info.to ? { to: info.to, kind: "best" } : null;   // 정답/응수는 최선 수 — 아이콘 표기
-  }, [idx, wrong, reply, intro]);
+    const moverColor = prevCur.length % 2 === 0 ? "w" : "b";
+    const info = sanSrc(boardFromSans(prevCur), stripSuffix(mvSan), moverColor);
+    if (!info || !info.to) return null;
+    // (UI5) 무조건 "최선"으로 고정하지 않고, 탁월한(희생) 수라면 그 등급을 그대로 표기한다.
+    const kind = (theme === "sacrifice" && idx === 1) || isSacrifice(boardFromSans(prevCur), mvSan, moverColor) ? "brilliant" : "best";
+    return { to: info.to, kind };   // 정답/응수 아이콘 표기
+  }, [idx, wrong, reply, intro, theme]);
   return (
     <div style={{ position: "relative", background: T.paper, border: "1px solid #DCCBA8", borderRadius: 14, padding: 16, maxWidth: 460, margin: "0 auto" }}>
       <button onClick={onClose} aria-label="닫기" className="press" style={{ position: "absolute", top: 12, right: 12, zIndex: 10, width: 30, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontSize: 15, fontWeight: 800, lineHeight: 1, cursor: "pointer" }}>✕</button>
@@ -3357,6 +3361,20 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState("");   // 구글 콜백 오류 안내
   const [searchOpen, setSearchOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
+  const [pendingFriendCount, setPendingFriendCount] = useState(0);
+  // (UI8) 메인 화면 친구 버튼에 보류 중인 요청 수를 배지로 표시 — 요청 탭을 열지 않아도 보이도록
+  useEffect(() => {
+    if (!uid) { setPendingFriendCount(0); return; }
+    let cancelled = false;
+    const check = async () => {
+      const e = await friendEdges();
+      if (cancelled) return;
+      setPendingFriendCount(e.filter((x) => x.status !== "accepted" && x.to_uid === uid).length);
+    };
+    check();
+    const id = setInterval(check, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [uid, friendsOpen]);
   const [authMode, setAuthMode] = useState("login");
   const [confirmLogout, setConfirmLogout] = useState(false);
   const [contentVer, setContentVer] = useState(0);
@@ -3455,7 +3473,10 @@ export default function App() {
           )}
           <span style={{ width: 1, height: 22, background: "linear-gradient(180deg,transparent," + T.brass + ",transparent)", opacity: .55 }} />
           <button onClick={() => setSearchOpen(true)} aria-label="유저 검색" className="press" style={{ width: 34, height: 34, borderRadius: 9, background: T.ebony3, color: T.brassHi, border: "1px solid " + T.brass, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Search size={16} /></button>
-          {user && <button onClick={() => setFriendsOpen(true)} aria-label="친구" className="press" style={{ width: 34, height: 34, borderRadius: 9, background: T.ebony3, color: T.brassHi, border: "1px solid " + T.brass, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}><Users size={16} /></button>}
+          {user && <button onClick={() => setFriendsOpen(true)} aria-label="친구" className="press" style={{ position: "relative", width: 34, height: 34, borderRadius: 9, background: T.ebony3, color: T.brassHi, border: "1px solid " + T.brass, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+            <Users size={16} />
+            {pendingFriendCount > 0 && <span style={{ position: "absolute", top: -6, right: -6, minWidth: 16, height: 16, padding: "0 3px", borderRadius: 999, background: T.blunder, color: "#fff", fontSize: 9.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #000", lineHeight: 1 }}>{pendingFriendCount > 9 ? "9+" : pendingFriendCount}</span>}
+          </button>}
         </div>
       </header>
       {authOpen && <AuthModal key={authMode} initialMode={authMode} onClose={() => setAuthOpen(false)} onAuth={onAuth} />}
