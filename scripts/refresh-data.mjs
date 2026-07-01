@@ -3,7 +3,7 @@
  * refresh-data.mjs — Lichess Explorer 빅데이터 + Stockfish 평가로 openings.json 생성.
  *
  * 핵심: 리체스에서 "이미 두어진 수들"의 통계를 그대로 가져온다.
- *   - 각 포지션마다 https://explorer.lichess.ovh/lichess 를 호출해
+ *   - 각 포지션마다 https://explorer.lichess.org/lichess 를 호출해
  *     실제 대국 수(games)·채택률(adopt)·ECO/오프닝 이름을 수집한다.
  *   - 각 후보 수는 Stockfish 로 평가(평가치·loss 기반 품질)한다.
  *   - ECO(오프닝 이름)가 붙는 수 = 이론 수(book) → 평가와 무관하게 book.
@@ -16,7 +16,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync, readFileSync } from "node:fs";
 
-const LICHESS = "https://explorer.lichess.ovh/lichess";
+const LICHESS = "https://explorer.lichess.org/lichess";
 const MAX_PLY = +(process.env.MAX_PLY || 10);
 const BREADTH = +(process.env.BREADTH || 5);
 const DELAY_MS = +(process.env.DELAY_MS || 700);
