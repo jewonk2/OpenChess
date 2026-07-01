@@ -37,6 +37,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // src/App.jsx 에 인라인된 "const SNAP = ...DATA 마커... {...};" 블록을 최신 데이터로 교체.
 // 앱은 src/data/openings.json 을 런타임에 읽지 않고 이 인라인 블록만 사용하므로,
 // 이 동기화가 없으면 refresh 를 아무리 돌려도 화면에는 절대 반영되지 않는다(과거 버그의 원인).
+function readAppSnap() {
+  const src = readFileSync("src/App.jsx", "utf8");
+  const lines = src.split("\n");
+  const idx = lines.findIndex((l) => l.startsWith("const SNAP = "));
+  if (idx === -1) return null;
+  const marker = "/*__DATA__*/ ";
+  const mi = lines[idx].indexOf(marker);
+  if (mi === -1) return null;
+  try { return JSON.parse(lines[idx].slice(mi + marker.length, -1)); } catch { return null; }
+}
 function injectIntoApp(data) {
   const appPath = "src/App.jsx";
   const src = readFileSync(appPath, "utf8");
@@ -49,6 +59,25 @@ function injectIntoApp(data) {
   const prefix = lines[idx].slice(0, mi + marker.length);
   lines[idx] = prefix + JSON.stringify(data) + ";";
   writeFileSync(appPath, lines.join("\n"));
+}
+// 안전장치: Lichess 조회가 (레이트리밋·인증 오류 등으로) 대부분/전부 실패하면 tree 가 텅 비거나
+// 기존보다 훨씬 작아진다. 이 경우 절대 기존 정상 데이터를 덮어쓰지 않는다(과거 데이터 유실 사고 재발 방지).
+// FORCE=1 로 강제 저장 가능.
+function guardedSave(snapshot, { label }) {
+  const newCount = Object.keys(snapshot.tree).length;
+  const baseline = (readAppSnap() || {}).tree || {};
+  const baselineCount = Object.keys(baseline).length;
+  if (!process.env.FORCE && baselineCount > 0 && newCount < baselineCount * 0.5) {
+    console.error(
+      `중단(${label}): 새 데이터가 ${newCount}개 노드로, 기존 ${baselineCount}개보다 너무 작습니다. ` +
+      `Lichess 조회가 대부분 실패했을 가능성이 큽니다 — 기존 데이터를 보호하기 위해 저장을 건너뜁니다. ` +
+      `정말로 이 결과로 덮어쓰려면 FORCE=1 환경변수를 설정하고 다시 실행하세요.`
+    );
+    return false;
+  }
+  writeFileSync("src/data/openings.json", JSON.stringify(snapshot));
+  injectIntoApp(snapshot);
+  return true;
 }
 
 /* ---- 최소 UCI 드라이버 (로컬 Stockfish 바이너리) ---- */
@@ -85,7 +114,10 @@ async function explorer(uciList) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const res = await fetch(url, { headers: { "User-Agent": "opening-trainer/1.0" } });
     if (res.status === 429) { await sleep(60000); continue; }
-    if (!res.ok) throw new Error("lichess " + res.status);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error("lichess " + res.status + (body ? " — " + body.slice(0, 300) : ""));
+    }
     const j = await res.json();
     cache.set(play, j);
     await sleep(DELAY_MS);
@@ -157,15 +189,13 @@ async function main() {
     tree[key] = { opening: data.opening || null, moves };
     if (count % 20 === 0) {
       console.error("evaluated", count, "moves,", Object.keys(tree).length, "nodes");
-      const snapshot = { tree, roots: ["e4", "d4"], maxPly: MAX_PLY };
-      writeFileSync("src/data/openings.json", JSON.stringify(snapshot));
-      injectIntoApp(snapshot);
+      guardedSave({ tree, roots: ["e4", "d4"], maxPly: MAX_PLY }, { label: "중간 저장" });
     }
   }
   eng.quit();
   const finalSnapshot = { tree, roots: ["e4", "d4"], maxPly: MAX_PLY };
-  writeFileSync("src/data/openings.json", JSON.stringify(finalSnapshot));
-  injectIntoApp(finalSnapshot);
+  const saved = guardedSave(finalSnapshot, { label: "최종 저장" });
+  if (!saved) { console.error("실패: 데이터가 저장되지 않았습니다. 위 원인(주로 Lichess 응답 오류)을 먼저 해결하세요."); process.exit(1); }
   console.error("DONE:", Object.keys(tree).length, "nodes,", count, "moves -> src/data/openings.json + src/App.jsx 인라인 동기화 완료");
 }
 main().catch((e) => { console.error(e); process.exit(1); });
