@@ -378,8 +378,12 @@ function seeSquare(board, tr, tc, side) {
   const gain = VAL[occ.t] - seeSquare(b, tr, tc, side === "w" ? "b" : "w");
   return Math.max(0, gain);                              // 손해면 잡지 않음(=0)
 }
-/* 진짜 '희생'인가: 폰 제외, 이 수로 인해 정적 교환상 실질 손실(≥2점)이 발생하는 경우만.
-   (예: ...Bb4+ 차단용 Nbd2/Nc3/Bd2 는 동가치 교환이라 SEE 손실 0 → 희생 아님) */
+/* 진짜 '희생'인가: 폰 제외, 이 수로 인해 정적 교환상 실질 손실(≥1점)이 발생하는 경우만.
+   (예: ...Bb4+ 차단용 Nbd2/Nc3/Bd2 는 동가치 교환이라 SEE 손실 0 → 희생 아님)
+   (기능4) 임계값을 -2에서 -1로 완화: 예를 들어 "비숍을 폰 두 개와 교환"하는 유명한
+   교환 희생 패턴(예: Sicilian ...Nbd7 이후 Bxe6)은 SEE상 순손실이 정확히 -1로 계산되는데
+   (3 - 2 = -1, 비숍 값 3을 내주고 폰 두 개(1+1)를 되찾는 구조), 기존 <= -2 기준으로는
+   이런 흔하고 중요한 교환 희생이 전부 걸러지지 않고 탁월한 수 판정에서 빠졌었다. */
 function isSacrifice(board, sanRaw, color) {
   const info = sanSrc(board, sanRaw, color);
   if (!info || info.castle) return false;
@@ -390,7 +394,7 @@ function isSacrifice(board, sanRaw, color) {
   const enemy = color === "w" ? "b" : "w";
   const oppGain = seeSquare(after, tr, tc, enemy);       // 상대가 이 칸에서 얻는 순이득
   const net = capturedVal - oppGain;                     // 내 관점 순손익
-  return net <= -2;                                      // 최소 경(輕)기물 가치 이상을 내준 경우만
+  return net <= -1;                                      // 최소 폰 한 점 이상의 실질 손실이 있는 경우
 }
 function kingPos(board, color) { for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const p = board[r][c]; if (p && p.c === color && p.t === "K") return [r, c]; } return null; }
 function isAttacked(board, tr, tc, byColor) {
@@ -1095,9 +1099,21 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode, sortB
         if (!active || !active.moves.length) { if (emptyMaster) setMoves(withExtra([])); return; }
         setPosGames(active.posTotal);
         const snapBy = Object.fromEntries(base.map((m) => [stripSuffix(m.san), m]));
+        // (기능3) 새로 추가한 이론 수(addsFor)와 스냅샷에 원래 있던 이론 수를 구분하지 않는다 —
+        // 둘 다 여기서 같은 "책 등록부"로 합쳐서 봄. 그렇지 않으면 dev가 추가한 수가 Lichess의
+        // 일반 후보 수로도 함께 돌아올 때 book 여부가 스냅샷 쪽(false)으로 덮여버려 헤더에서
+        // 비이론 수로 잘못 표기되는 문제가 있었음.
+        const devAddsBy = Object.fromEntries(addsFor(key).map((a) => [stripSuffix(a.san), a]));
         const masterAdoptBy = master ? Object.fromEntries(master.moves.map((m) => [stripSuffix(m.san), m.adopt])) : {};
         const masterTopSans = master ? master.moves.slice(0, 3).map((m) => stripSuffix(m.san)) : [];
-        const mk = (l) => { const s = snapBy[stripSuffix(l.san)] || {}; const unb = isUnbooked(key, l.san); return { san: l.san, adopt: l.adopt, games: l.games, wdl: l.wdl, book: !unb && !!s.book, name: s.name, kw: s.kw, evalCp: s.evalCp, isMain: s.isMain, masterAdopt: masterAdoptBy[stripSuffix(l.san)] ?? null, masterTop: masterTopSans.includes(stripSuffix(l.san)) }; };
+        const mk = (l) => {
+          const k = stripSuffix(l.san);
+          const s = snapBy[k] || {};
+          const dev = devAddsBy[k];
+          const unb = isUnbooked(key, l.san);
+          const book = !unb && (!!s.book || !!(dev && dev.theory));
+          return { san: l.san, adopt: l.adopt, games: l.games, wdl: l.wdl, book, name: s.name ?? (dev && dev.name), kw: s.kw, evalCp: s.evalCp, isMain: s.isMain, masterAdopt: masterAdoptBy[k] ?? null, masterTop: masterTopSans.includes(k) };
+        };
         const all = active.moves.map(mk);
         const books = all.filter((m) => m.book);
         const nonbook = all.filter((m) => !m.book);
@@ -1863,7 +1879,8 @@ function WinBar({ wdl, height = 8 }) {
   );
 }
 function DexMoveCard({ path, m, child, isUnlocked, hasChildren, wdl, cc, onOpen }) {
-  const label = m.name || (child && child.opening ? child.opening.name : null) || (m.isMain ? "Main Line" : null);
+  // (기능3) 개발자가 이름을 바꾸면 도감에도 즉시 반영되도록 override를 최우선으로 본다.
+  const label = nameOverride(path.join(" "), m.san) ?? m.name ?? (child && child.opening ? child.opening.name : null) ?? (m.isMain ? "Main Line" : null);
   const childSans = [...path, m.san];
   return (
     <div style={{ borderRadius: 16, padding: 12, background: isUnlocked ? "linear-gradient(180deg,#FBF5E8,#E2D2B2)" : "linear-gradient(180deg,#33261A,#221610)", boxShadow: isUnlocked ? "0 5px 0 #B59A6E, 0 10px 18px -10px rgba(0,0,0,.5)" : "inset 0 1px 0 rgba(255,255,255,.05)", border: "1px solid " + (isUnlocked ? "#CDB98E" : "#000") }}>
