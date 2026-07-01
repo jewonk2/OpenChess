@@ -3,7 +3,7 @@ import {
   GraduationCap, Library, Settings, ChevronLeft, ChevronRight, ChevronsLeft,
   Lock, Crown, Sparkles, Info, Book, BookOpen, ArrowUpDown, Cpu, Wifi, WifiOff,
   ChevronRight as Crumb, Star, ThumbsUp, Check, Play, ArrowLeft, RotateCcw, Search, X,
-  Users, UserPlus, UserCheck, Clock,
+  Users, UserPlus, UserCheck, Clock, Eye, EyeOff,
 } from "lucide-react";
 
 /* ============================================================ 디자인 토큰 ============================================================ */
@@ -2678,13 +2678,33 @@ async function authSignup(email, password, username) {
   return { ok: true, account: { uid, username: uname, pub: {}, progress: {} } };
 }
 /* 로그인 */
-async function authLogin(email, password) {
+async function authLogin(loginOrEmail, password) {
   if (!SB_ON) return { ok: false, error: "offline" };
+  let email = (loginOrEmail || "").trim();
+  if (!email) return { ok: false, error: "invalid" };
+  if (!email.includes("@")) {   // 아이디로 로그인 → 이메일로 해석(username 은 중복 불가라 1:1)
+    try { const e = await sbRpc("email_for_username", { p_username: email.toLowerCase() }); email = (typeof e === "string" ? e : (e && e.email)) || ""; } catch { email = ""; }
+    if (!email) return { ok: false, error: "invalid" };
+  }
   const r = await gotrue("token?grant_type=password", { email, password });
-  if (!r.ok) return { ok: false, error: "invalid" };
+  if (!r.ok) return { ok: false, error: "invalid", email };
   const uid = applySession(r.data);
-  if (!uid) return { ok: false, error: "invalid" };
+  if (!uid) return { ok: false, error: "invalid", email };
   return { ok: true, account: await loadAccount(uid) };
+}
+/* 이메일이 어떤 제공자(이메일/구글)로 가입돼 있는지 조회 → 같은 메일 다른 방식 가입 시 안내용 */
+async function accountProviders(email) {
+  if (!SB_ON || !email || !email.includes("@")) return [];
+  try { const r = await sbRpc("account_providers", { p_email: email.trim().toLowerCase() }); return Array.isArray(r) ? r : []; } catch { return []; }
+}
+/* 구글 콜백 오류(예: 이미 다른 방식으로 가입된 이메일과 충돌) 파싱 */
+function parseOAuthError() {
+  try {
+    const h = (typeof window !== "undefined" && window.location.hash) || "";
+    if (h.indexOf("error") < 0) return null;
+    const p = new URLSearchParams(h.replace(/^#/, ""));
+    const e = p.get("error_description") || p.get("error"); return e ? decodeURIComponent(e.replace(/\+/g, " ")) : null;
+  } catch { return null; }
 }
 /* 세션 복원(앱 로드): refresh_token → 새 access_token. 반환 account | null */
 async function authRestore() {
@@ -3009,11 +3029,15 @@ async function claimUsername(uid, username) {
   if (!SB_ON || !uid) return { ok: false, error: "offline" };
   const uname = (username || "").toLowerCase();
   if (!ALNUM.test(uname) || uname.length < 3 || uname.length > 20) return { ok: false, error: "invalid" };
-  try { const avail = await sbRpc("username_available", { p_username: uname }); if (avail === false) return { ok: false, error: "username_taken" }; } catch { }
+  // 서버측 원자적 확정: claim_username 은 auth.uid() 로 본인 행을 만들고, 타인이 쓰는 아이디면 'taken' 반환.
+  // 동시성 레이스는 username UNIQUE 제약으로 차단. 예외/예상외 응답이면 진행하지 않음(fail-closed → 도용 불가).
   try {
-    const r = await fetch(SB_URL + "/rest/v1/profiles", { method: "POST", headers: { ...sbHeaders(), Prefer: "return=minimal" }, body: JSON.stringify({ id: uid, username: uname, pub: {} }) });
-    if (!r.ok) { const t = await r.text().catch(() => ""); return { ok: false, error: /duplicate|unique|23505|already exists/i.test(t) ? "username_taken" : "failed" }; }
-    return { ok: true };
+    const res = await sbRpc("claim_username", { p_username: uname });
+    const v = Array.isArray(res) ? res[0] : res;
+    if (v === "ok" || v === "already") return { ok: true };
+    if (v === "taken") return { ok: false, error: "username_taken" };
+    if (v === "invalid") return { ok: false, error: "invalid" };
+    return { ok: false, error: "failed" };
   } catch { return { ok: false, error: "failed" }; }
 }
 
@@ -3051,8 +3075,9 @@ function AuthModal({ onClose, onAuth, initialMode }) {
   const [mode, setMode] = useState(initialMode || "login");
   const [email, setEmail] = useState(""); const [id, setId] = useState(""); const [pw, setPw] = useState("");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false); const [sent, setSent] = useState(false);
+  const [pw2, setPw2] = useState(""); const [showPw, setShowPw] = useState(false); const [googleHint, setGoogleHint] = useState(false);
   const submit = async () => {
-    setErr("");
+    setErr(""); setGoogleHint(false);
     if (mode === "reset") {
       const who = email.trim();
       if (!who) { setErr("아이디 또는 이메일을 입력하세요."); return; }
@@ -3061,17 +3086,26 @@ function AuthModal({ onClose, onAuth, initialMode }) {
       setBusy(false); setSent(true);
       return;
     }
+    const isEmail = email.includes("@");
     const em = email.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { setErr("올바른 이메일을 입력하세요."); return; }
+    if (mode === "signup" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { setErr("올바른 이메일을 입력하세요."); return; }
+    if (mode === "login" && !em) { setErr("아이디 또는 이메일을 입력하세요."); return; }
     if (pw.length < 6) { setErr("비밀번호는 6자 이상이어야 합니다."); return; }
-    if (mode === "signup" && (!ALNUM.test(id) || id.length < 3 || id.length > 20)) { setErr("아이디는 영문+숫자 3~20자여야 합니다."); return; }
+    if (mode === "signup") {
+      if (!ALNUM.test(id) || id.length < 3 || id.length > 20) { setErr("아이디는 영문+숫자 3~20자여야 합니다."); return; }
+      if (pw !== pw2) { setErr("비밀번호가 일치하지 않습니다."); return; }
+    }
     setBusy(true);
     try {
       if (mode === "signup") {
         const r = await authSignup(em, pw, id);
         if (!r || !r.ok) {
+          if (r && r.error === "email_taken") {
+            const provs = await accountProviders(em);
+            if (provs.indexOf("google") >= 0 && provs.indexOf("email") < 0) { setGoogleHint(true); setErr("이 이메일은 Google 계정으로 가입되어 있어요. 아래 ‘Google로 계속하기’로 로그인하세요."); setBusy(false); return; }
+            setErr("이미 가입된 이메일입니다. 로그인해 주세요."); setBusy(false); return;
+          }
           setErr(r && r.error === "username_taken" ? "이미 사용 중인 아이디입니다."
-            : r && r.error === "email_taken" ? "이미 가입된 이메일입니다."
             : r && r.error === "confirm_required" ? "확인 메일을 보냈습니다. 인증 후 로그인하세요."
             : r && r.error === "offline" ? "서버 연결이 필요합니다."
             : "가입 처리 중 오류가 발생했습니다.");
@@ -3080,7 +3114,12 @@ function AuthModal({ onClose, onAuth, initialMode }) {
         onAuth(r.account);
       } else {
         const r = await authLogin(em, pw);
-        if (!r || !r.ok) { setErr(r && r.error === "offline" ? "서버 연결이 필요합니다." : "이메일 또는 비밀번호가 올바르지 않습니다."); setBusy(false); return; }
+        if (!r || !r.ok) {
+          if (r && r.error === "offline") { setErr("서버 연결이 필요합니다."); setBusy(false); return; }
+          const probe = (r && r.email) || (isEmail ? em : "");
+          if (probe) { const provs = await accountProviders(probe); if (provs.indexOf("google") >= 0 && provs.indexOf("email") < 0) { setGoogleHint(true); setErr("이 계정은 Google로 가입되어 있어요. 아래 ‘Google로 계속하기’로 로그인하세요."); setBusy(false); return; } }
+          setErr("아이디/이메일 또는 비밀번호가 올바르지 않습니다."); setBusy(false); return;
+        }
         onAuth(r.account);
       }
     } catch { setErr("처리 중 오류가 발생했습니다."); }
@@ -3116,17 +3155,21 @@ function AuthModal({ onClose, onAuth, initialMode }) {
           </>
         )) : (
           <>
-            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="이메일" type="email" autoComplete="email" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder={mode === "login" ? "아이디 또는 이메일" : "이메일"} type={mode === "login" ? "text" : "email"} autoComplete={mode === "login" ? "username" : "email"} onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
             {mode === "signup" && <input value={id} onChange={(e) => setId(e.target.value)} placeholder="아이디 (영문+숫자 3~20자, 공개 표시)" style={inputStyle} />}
-            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호 (6자 이상)" autoComplete={mode === "login" ? "current-password" : "new-password"} onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />
-            {err && <div style={{ fontSize: 12, color: T.blunder, marginBottom: 8 }}>{err}</div>}
+            <div style={{ position: "relative" }}>
+              <input type={showPw ? "text" : "password"} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호 (6자 이상)" autoComplete={mode === "login" ? "current-password" : "new-password"} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ ...inputStyle, paddingRight: 40 }} />
+              <button type="button" onClick={() => setShowPw((v) => !v)} aria-label={showPw ? "비밀번호 숨기기" : "비밀번호 보이기"} title={showPw ? "비밀번호 숨기기" : "비밀번호 보이기"} style={{ position: "absolute", right: 6, top: 5, width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", color: T.inkSoft }}>{showPw ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+            </div>
+            {mode === "signup" && <input type={showPw ? "text" : "password"} value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="비밀번호 확인" autoComplete="new-password" onKeyDown={(e) => e.key === "Enter" && submit()} style={inputStyle} />}
+            {err && <div style={{ fontSize: 12, color: googleHint ? T.ink : T.blunder, marginBottom: 8, lineHeight: 1.5, fontWeight: googleHint ? 700 : 400 }}>{err}</div>}
             <button onClick={submit} disabled={busy} className="press" style={{ width: "100%", padding: "11px 0", borderRadius: 10, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", marginBottom: 10 }}>{busy ? "처리 중…" : (mode === "login" ? "로그인" : "가입하고 시작")}</button>
             <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "2px 0 10px" }}><div style={{ flex: 1, height: 1, background: "#C9B58C" }} /><span style={{ fontSize: 11, color: T.inkSoft }}>또는</span><div style={{ flex: 1, height: 1, background: "#C9B58C" }} /></div>
             <button onClick={authGoogleStart} className="press" style={{ width: "100%", padding: "10px 0", borderRadius: 10, background: "#fff", color: "#3c4043", fontWeight: 700, border: "1px solid #CDB98E", cursor: "pointer", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}><GoogleG /> Google로 계속하기</button>
             {mode === "login" && <div style={{ textAlign: "center", marginBottom: 8 }}><button onClick={() => { setMode("reset"); setErr(""); setSent(false); setPw(""); }} style={{ color: T.inkSoft, fontSize: 12, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>비밀번호를 잊으셨나요?</button></div>}
             <div style={{ textAlign: "center", fontSize: 12.5, color: T.inkSoft }}>
               {mode === "login" ? "계정이 없나요? " : "이미 계정이 있나요? "}
-              <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); }} style={{ color: "#5A3A22", fontWeight: 800, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>{mode === "login" ? "회원가입" : "로그인"}</button>
+              <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); setGoogleHint(false); setPw2(""); }} style={{ color: "#5A3A22", fontWeight: 800, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>{mode === "login" ? "회원가입" : "로그인"}</button>
             </div>
             <p style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.4 }}>이메일·비밀번호로 가입합니다. 아이디는 친구 검색·프로필에 공개로 표시되며, 진도(도감·해결한 퍼즐)는 계정에 저장됩니다.</p>
           </>
@@ -3186,6 +3229,7 @@ export default function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [recovery, setRecovery] = useState(null);
   const [needUser, setNeedUser] = useState(null);   // 최초 구글 로그인 → 아이디 설정 대기
+  const [authNotice, setAuthNotice] = useState("");   // 구글 콜백 오류 안내
   const [searchOpen, setSearchOpen] = useState(false);
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
@@ -3212,6 +3256,7 @@ export default function App() {
   useEffect(() => { (async () => {
     const _rec = parseRecoveryHash(); if (_rec) setRecovery(_rec);
     const _oauth = _rec ? null : parseOAuthHash();
+    if (!_rec && !_oauth) { const _oerr = parseOAuthError(); if (_oerr) { setAuthNotice("Google 로그인을 완료하지 못했어요. 이미 다른 방식으로 가입된 이메일일 수 있습니다."); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } } }
     const raw = await store.get("chess_state_v5");
     if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra); } catch { } }
     try { if (!_rec && !_oauth) { const acc = await authRestore(); if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); } } } catch { }
@@ -3290,6 +3335,7 @@ export default function App() {
       </header>
       {authOpen && <AuthModal key={authMode} initialMode={authMode} onClose={() => setAuthOpen(false)} onAuth={onAuth} />}
       {recovery && <NewPasswordModal recovery={recovery} onDone={(acc) => { setRecovery(null); if (acc) onAuth(acc); }} onClose={() => setRecovery(null)} />}
+      {authNotice && <div onClick={() => setAuthNotice("")} style={{ position: "fixed", left: "50%", bottom: 90, transform: "translateX(-50%)", zIndex: 95, maxWidth: 340, width: "calc(100% - 32px)", background: "#241509", color: "#F2E8D5", border: "1px solid #C49A50", borderRadius: 12, padding: "12px 14px", fontSize: 13, lineHeight: 1.5, boxShadow: "0 12px 30px -8px rgba(0,0,0,.6)", cursor: "pointer" }}>{authNotice} <span style={{ opacity: .7, fontSize: 11 }}>(탭하여 닫기)</span></div>}
       {needUser && <UsernameSetupModal account={needUser} onDone={(acc) => { setNeedUser(null); if (acc) onAuth(acc); }} onCancel={async () => { try { await authLogout(); } catch { } setNeedUser(null); setUser(null); setUid(null); }} />}
       {searchOpen && <UserSearchModal me={user} onClose={() => setSearchOpen(false)} />}
       {friendsOpen && <FriendsModal me={user} myUid={uid} onClose={() => setFriendsOpen(false)} />}
