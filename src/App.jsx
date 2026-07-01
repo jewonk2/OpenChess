@@ -1257,8 +1257,10 @@ function AnimatedMove({ sans, san, size = 140, extraArrows = [], loopMs = 2000, 
   const px = (r, c) => { const [vr, vc] = dv(r, c); return [vc * cell + cell / 2, vr * cell + cell / 2]; };
   return (
     <div>
-      <div style={{ width: cell * 8 + 12, maxWidth: "100%", padding: 6, borderRadius: 9, background: "linear-gradient(160deg,#3A2516,#241509)", border: "1px solid #000", margin: "0 auto" }}>
-        <div style={{ position: "relative", borderRadius: 3, overflow: "hidden", border: "2px solid " + T.brass }}>
+      {/* (UI4) Board와 정확히 같은 padding/width 공식을 써서 퍼즐에서 애니메이션↔인터랙티브 보드 전환 시
+          바깥 박스 크기가 바뀌어(도합 16px 차이) 보드가 "흔들리는" 것처럼 보이던 문제를 없앤다. */}
+      <div style={{ width: cell * 8 + 20, maxWidth: "100%", padding: 10, borderRadius: 12, background: "linear-gradient(160deg,#3A2516,#241509)", border: "1px solid #000", margin: "0 auto" }}>
+        <div style={{ position: "relative", borderRadius: 4, overflow: "hidden", border: "2px solid " + T.brass }}>
           {rows.map((row, vr) => (
             <div key={vr} style={{ display: "flex" }}>
               {row.map((p, vc) => { const [r, c] = tx(vr, vc); const light = (r + c) % 2 === 0; const hideFrom = r === fr[0] && c === fr[1]; const isTo = r === to[0] && c === to[1];
@@ -2159,9 +2161,10 @@ function RevertSlide({ board, from, to, size = 380, flip = false }) {
   const [ffr, ffc] = dv(from[0], from[1]); const [ttr, ttc] = dv(to[0], to[1]);
   const dx = slid ? (ffc - ttc) * cell : 0, dy = slid ? (ffr - ttr) * cell : 0;
   const moving = board[to[0]][to[1]];   // 잘못된 수를 두어 지금 도착 칸에 있는 기물 — 원래 칸으로 되돌아감
+  // (UI4) Board와 동일한 padding/width 공식(보드 크기 불일치로 인한 흔들림 방지)
   return (
-    <div style={{ width: cell * 8 + 12, maxWidth: "100%", padding: 6, borderRadius: 9, background: "linear-gradient(160deg,#3A2516,#241509)", border: "1px solid #000", margin: "0 auto" }}>
-      <div style={{ position: "relative", borderRadius: 3, overflow: "hidden", border: "2px solid " + T.brass }}>
+    <div style={{ width: cell * 8 + 20, maxWidth: "100%", padding: 10, borderRadius: 12, background: "linear-gradient(160deg,#3A2516,#241509)", border: "1px solid #000", margin: "0 auto" }}>
+      <div style={{ position: "relative", borderRadius: 4, overflow: "hidden", border: "2px solid " + T.brass }}>
         {rows.map((row, vr) => (
           <div key={vr} style={{ display: "flex" }}>
             {row.map((p, vc) => {
@@ -2269,7 +2272,7 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
           ? <AnimatedMove sans={reply.sans} san={reply.san} size={boardSize} loopMs={0} flip={userColor === "b"} />
         : reverting
           ? <RevertSlide board={wrong.board} from={wrong.from} to={wrong.at} size={boardSize} flip={userColor === "b"} />
-        : <Board board={wrong ? wrong.board : board} flip={userColor === "b"} size={boardSize} selected={sel} wrongAt={wrong ? wrong.at : null} lastQ={lastQpz} showCoords={false} onSquareClick={onSquareClick} onPieceDrag={(sq) => { const p = board[sq[0]][sq[1]]; if (userToMove && p && p.c === color) setSel(sq); }} onDrop={(sq) => { if (userToMove && sel) tryUserMove(sel, sq); }} onMove={(from, to) => { if (userToMove) tryUserMove(from, to); }} legalTargets={userToMove && sel ? legalDests(board, sel[0], sel[1], color, ep) : []} showEval={false} interactive={userToMove} />}
+        : <Board board={wrong ? wrong.board : board} flip={userColor === "b"} size={boardSize} selected={sel} wrongAt={wrong ? wrong.at : null} lastQ={lastQpz} showCoords onSquareClick={onSquareClick} onPieceDrag={(sq) => { const p = board[sq[0]][sq[1]]; if (userToMove && p && p.c === color) setSel(sq); }} onDrop={(sq) => { if (userToMove && sel) tryUserMove(sel, sq); }} onMove={(from, to) => { if (userToMove) tryUserMove(from, to); }} legalTargets={userToMove && sel ? legalDests(board, sel[0], sel[1], color, ep) : []} showEval={false} interactive={userToMove} />}
       </div>
       <p style={{ fontSize: 13, color: done ? T.best : wrong ? T.blunder : T.ink, fontWeight: 700, marginTop: 12, textAlign: "center" }}>{prompt}</p>
       <div className="flex justify-center gap-2" style={{ marginTop: 12 }}>
