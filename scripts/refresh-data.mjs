@@ -3,7 +3,7 @@
  * refresh-data.mjs — Lichess Explorer 빅데이터 + Stockfish 평가로 openings.json 생성.
  *
  * 핵심: 리체스에서 "이미 두어진 수들"의 통계를 그대로 가져온다.
- *   - 각 포지션마다 https://explorer.lichess.ovh/lichess 를 호출해
+ *   - 각 포지션마다 https://explorer.lichess.org/lichess 를 호출해
  *     실제 대국 수(games)·채택률(adopt)·ECO/오프닝 이름을 수집한다.
  *   - 각 후보 수는 Stockfish 로 평가(평가치·loss 기반 품질)한다.
  *   - ECO(오프닝 이름)가 붙는 수 = 이론 수(book) → 평가와 무관하게 book.
@@ -14,17 +14,42 @@
  *   옵션: MAX_PLY(기본10) BREADTH(기본5) DELAY_MS(기본 700, 리체스 예의)
  */
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 
-const LICHESS = "https://explorer.lichess.ovh/lichess";
+const LICHESS = "https://explorer.lichess.org/lichess";
 const MAX_PLY = +(process.env.MAX_PLY || 10);
 const BREADTH = +(process.env.BREADTH || 5);
 const DELAY_MS = +(process.env.DELAY_MS || 700);
 const SF = process.env.STOCKFISH_PATH || "stockfish";
 const RATINGS = "1600,1800,2000,2200,2500";
 const SPEEDS = "blitz,rapid,classical";
+// 전체 누적(수백만 표본) 대신 "최근 N개월간 실제로 두어진 대국"만 집계 — 앱의 라이브 조회와 동일 기준
+const STATS_WINDOW_MONTHS = +(process.env.STATS_WINDOW_MONTHS || 12);
+function sinceParam(monthsBack) {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - monthsBack);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+}
+const SINCE = sinceParam(STATS_WINDOW_MONTHS);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// src/App.jsx 에 인라인된 "const SNAP = ...DATA 마커... {...};" 블록을 최신 데이터로 교체.
+// 앱은 src/data/openings.json 을 런타임에 읽지 않고 이 인라인 블록만 사용하므로,
+// 이 동기화가 없으면 refresh 를 아무리 돌려도 화면에는 절대 반영되지 않는다(과거 버그의 원인).
+function injectIntoApp(data) {
+  const appPath = "src/App.jsx";
+  const src = readFileSync(appPath, "utf8");
+  const lines = src.split("\n");
+  const idx = lines.findIndex((l) => l.startsWith("const SNAP = "));
+  if (idx === -1) { console.error("경고: src/App.jsx 에서 'const SNAP = ' 라인을 찾지 못해 인라인 동기화를 건너뜀"); return; }
+  const marker = "/*__DATA__*/ ";
+  const mi = lines[idx].indexOf(marker);
+  if (mi === -1) { console.error("경고: /*__DATA__*/ 마커를 찾지 못해 인라인 동기화를 건너뜀"); return; }
+  const prefix = lines[idx].slice(0, mi + marker.length);
+  lines[idx] = prefix + JSON.stringify(data) + ";";
+  writeFileSync(appPath, lines.join("\n"));
+}
 
 /* ---- 최소 UCI 드라이버 (로컬 Stockfish 바이너리) ---- */
 function makeEngine() {
@@ -56,7 +81,7 @@ const cache = new Map();
 async function explorer(uciList) {
   const play = uciList.join(",");
   if (cache.has(play)) return cache.get(play);
-  const url = `${LICHESS}?play=${play}&moves=12&topGames=0&recentGames=0&speeds=${SPEEDS}&ratings=${RATINGS}`;
+  const url = `${LICHESS}?play=${play}&moves=12&topGames=0&recentGames=0&speeds=${SPEEDS}&ratings=${RATINGS}&since=${SINCE}`;
   for (let attempt = 0; attempt < 5; attempt++) {
     const res = await fetch(url, { headers: { "User-Agent": "opening-trainer/1.0" } });
     if (res.status === 429) { await sleep(60000); continue; }
@@ -130,10 +155,17 @@ async function main() {
     const mainIdx = moves.reduce((bi, m, i, a) => (m.games > (a[bi]?.games || -1) ? i : bi), 0);
     if (moves[mainIdx] && !moves[mainIdx].name) moves[mainIdx].isMain = true;
     tree[key] = { opening: data.opening || null, moves };
-    if (count % 20 === 0) { console.error("evaluated", count, "moves,", Object.keys(tree).length, "nodes"); writeFileSync("src/data/openings.json", JSON.stringify({ tree, roots: ["e4", "d4"], maxPly: MAX_PLY })); }
+    if (count % 20 === 0) {
+      console.error("evaluated", count, "moves,", Object.keys(tree).length, "nodes");
+      const snapshot = { tree, roots: ["e4", "d4"], maxPly: MAX_PLY };
+      writeFileSync("src/data/openings.json", JSON.stringify(snapshot));
+      injectIntoApp(snapshot);
+    }
   }
   eng.quit();
-  writeFileSync("src/data/openings.json", JSON.stringify({ tree, roots: ["e4", "d4"], maxPly: MAX_PLY }));
-  console.error("DONE:", Object.keys(tree).length, "nodes,", count, "moves -> src/data/openings.json");
+  const finalSnapshot = { tree, roots: ["e4", "d4"], maxPly: MAX_PLY };
+  writeFileSync("src/data/openings.json", JSON.stringify(finalSnapshot));
+  injectIntoApp(finalSnapshot);
+  console.error("DONE:", Object.keys(tree).length, "nodes,", count, "moves -> src/data/openings.json + src/App.jsx 인라인 동기화 완료");
 }
 main().catch((e) => { console.error(e); process.exit(1); });
