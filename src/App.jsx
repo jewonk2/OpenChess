@@ -2924,13 +2924,23 @@ function UserSearchModal({ onClose, me }) {
               {pub.photo ? <img src={pub.photo} alt="" style={{ width: 64, height: 64, borderRadius: 16, objectFit: "cover", border: "1px solid #C9B58C" }} />
                 : <span style={{ width: 64, height: 64, borderRadius: 16, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 26 }}>{(pub.nickname || pub.username || "?")[0].toUpperCase()}</span>}
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{pub.nickname || pub.username}</div>
+                <div className="flex items-center gap-2">
+                  <span style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{pub.nickname || pub.username}</span>
+                  {/* (UX5) 칭호는 닉네임 우측에 작게 표시(전체 카드가 아니라 텍스트로) */}
+                  {pub.title && <span style={{ fontSize: 11, color: T.brass, fontWeight: 800 }}>{titleLabel(pub.title)}</span>}
+                </div>
                 <div style={{ fontSize: 12, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>@{pub.username}</div>
               </div>
             </div>
-            {pub.title && <div style={{ marginBottom: 12 }}><TitleBadge id={pub.title} earned /></div>}
             {pub.chesscom && <div style={{ fontSize: 12.5, color: T.ink, marginBottom: 6 }}>chess.com: <b>{pub.chesscom}</b></div>}
-            {!pub.nickname && !pub.title && !pub.chesscom && <div style={{ fontSize: 12.5, color: T.inkSoft }}>공개된 프로필 정보가 없습니다.</div>}
+            {/* (UX5) 자주 두는 첫 수 */}
+            {pub.firstMoves && (pub.firstMoves.white || Object.keys(pub.firstMoves.black || {}).length > 0) && (
+              <div style={{ fontSize: 12.5, color: T.ink, marginBottom: 6 }}>
+                자주 두는 첫 수: {pub.firstMoves.white && <b>{pub.firstMoves.white}</b>}
+                {Object.entries(pub.firstMoves.black || {}).filter(([, v]) => v).map(([w, b]) => <span key={w} style={{ marginLeft: 8 }}>vs 1.{w} <b>{b}</b></span>)}
+              </div>
+            )}
+            {!pub.nickname && !pub.title && !pub.chesscom && !pub.firstMoves && <div style={{ fontSize: 12.5, color: T.inkSoft }}>공개된 프로필 정보가 없습니다.</div>}
             {me && pub.username && pub.username.toLowerCase() !== me.toLowerCase() && (
               <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #E4D5B6" }}>
                 {reqState === "accepted" ? <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: T.ink }}><UserCheck size={14} />친구가 되었습니다</span>
@@ -3422,7 +3432,7 @@ export default function App() {
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
-  useEffect(() => { if (loaded && uid && user) publishProfile(uid, user, { nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "" }); }, [loaded, uid, user, profile.nickname, profile.photo, profile.chesscom, currentTitle]);
+  useEffect(() => { if (loaded && uid && user) publishProfile(uid, user, { nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "", firstMoves: profile.firstMoves || null }); }, [loaded, uid, user, profile.nickname, profile.photo, profile.chesscom, currentTitle, profile.firstMoves]);
   useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive]);
   useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
   // (기능4) 해결 횟수로부터 새 칭호 획득 → 영구 저장 + 획득 알림(장착 버튼)
