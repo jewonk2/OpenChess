@@ -291,13 +291,7 @@ function lichessSinceParam(monthsBack) {
   d.setUTCMonth(d.getUTCMonth() - monthsBack);
   return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
 }
-async function fetchLichess(sans, master) {
-  const uci = sansToUci(sans).join(",");
-  const url = master
-    ? LICHESS_API + "?master=1&play=" + uci + "&moves=14&topGames=0"
-    : LICHESS_API + "?play=" + uci + "&moves=20&topGames=0&recentGames=0&speeds=bullet,blitz,rapid,classical&ratings=1000,1200,1400,1600,1800,2000,2200,2500&since=" + lichessSinceParam(LICHESS_STATS_WINDOW_MONTHS);
-  const hit = _lichessCache.get(url);
-  if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.data; // 10분 캐시(되돌리기·재방문 시 재요청·레이트리밋 방지)
+async function lichessFetchWithRetry(url) {
   let res = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     res = await fetch(url);
@@ -309,15 +303,53 @@ async function fetchLichess(sans, master) {
     break;
   }
   if (!res || !res.ok) throw new Error("lichess " + (res ? res.status : "no-response"));
-  const j = await res.json();
+  return res;
+}
+async function lichessFetchJson(url) {
+  const hit = _lichessCache.get(url);
+  if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.data; // 10분 캐시(되돌리기·재방문 시 재요청·레이트리밋 방지)
+  const data = await (await lichessFetchWithRetry(url)).json();
+  _lichessCache.set(url, { t: Date.now(), data });
+  return data;
+}
+async function lichessFetchText(url) {
+  const hit = _lichessCache.get(url);
+  if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.data;
+  const data = await (await lichessFetchWithRetry(url)).text();
+  _lichessCache.set(url, { t: Date.now(), data });
+  return data;
+}
+async function fetchLichess(sans, master) {
+  const uci = sansToUci(sans).join(",");
+  const url = master
+    ? LICHESS_API + "?master=1&play=" + uci + "&moves=14&topGames=0"
+    : LICHESS_API + "?play=" + uci + "&moves=20&topGames=0&recentGames=0&speeds=bullet,blitz,rapid,classical&ratings=1000,1200,1400,1600,1800,2000,2200,2500&since=" + lichessSinceParam(LICHESS_STATS_WINDOW_MONTHS);
+  const j = await lichessFetchJson(url);
   const posTotal = (j.white || 0) + (j.draws || 0) + (j.black || 0);
   const moves = (j.moves || []).map((m) => {
     const tot = (m.white || 0) + (m.draws || 0) + (m.black || 0);
     return { san: m.san, games: tot, adopt: posTotal ? +(100 * tot / posTotal).toFixed(1) : 0, name: m.opening ? m.opening.name : null, wdl: { w: m.white || 0, d: m.draws || 0, b: m.black || 0 } };
   });
-  const data = { posTotal, opening: j.opening || null, moves, wdl: { w: j.white || 0, d: j.draws || 0, b: j.black || 0 }, master: !!master };
-  _lichessCache.set(url, { t: Date.now(), data });
-  return data;
+  return { posTotal, opening: j.opening || null, moves, wdl: { w: j.white || 0, d: j.draws || 0, b: j.black || 0 }, master: !!master };
+}
+// (기능) 집중학습의 "마스터 대국" 목록 — 이 수가 두어진 실제 마스터 게임(대국자·레이팅·결과).
+async function fetchMasterTopGames(sans, count = 12) {
+  const uci = sansToUci(sans).join(",");
+  const url = LICHESS_API + "?master=1&play=" + uci + "&moves=0&topGames=" + count;
+  const j = await lichessFetchJson(url);
+  return (j.topGames || []).map((g) => ({ id: g.id, winner: g.winner || null, white: g.white, black: g.black, year: g.year }));
+}
+function parsePgnMoves(pgn) {
+  const noHeaders = pgn.replace(/^\[.*\]$/gm, "");
+  const noComments = noHeaders.replace(/\{[^}]*\}/g, "").replace(/;[^\n]*/g, "");
+  const noNags = noComments.replace(/\$\d+/g, "");
+  const noMoveNums = noNags.replace(/\d+\.(\.\.)?/g, " ");
+  const noResult = noMoveNums.replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, "");
+  return noResult.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+}
+async function fetchMasterGamePgn(id) {
+  const text = await lichessFetchText(LICHESS_API + "?pgn=" + id);
+  return parsePgnMoves(text);
 }
 async function fetchWiki(name) {
   if (!name) return null;
@@ -1288,9 +1320,9 @@ function brilliantArrows(sans, san) {
   return out.slice(0, 6);
 }
 
-// (UI/UX) 집중학습을 별개의 전체 창으로 띄우지 않고 체스보드 하단 UI에 병합하기 위해,
-// 상태/부수효과는 하나의 훅으로 모으고(퍼즐 자동저장 등 중복 실행 방지), 렌더링만
-// FocusHead(보드 하단 · 주요 분기점/현재 수 자리)와 FocusBody(수 블록 자리)로 나눈다.
+// (UI/UX) 집중학습을 별개의 전체 창으로 띄우지 않고, 기존에 쓰던 집중학습 UI를 그대로
+// 체스보드 하단(왼쪽 칼럼)에 배치한다 — 오른쪽 칼럼은 집중학습 중에도 항상 수 블록 목록을 보여준다.
+// 상태/부수효과(퍼즐 자동저장 등)는 하나의 훅(useFocusAnalysis)에 모아 중복 실행을 막는다.
 function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canAdd, bumpContent, puzzles }) {
   const active = !!focus;
   const sans = active ? focus.sans : [];
@@ -1427,18 +1459,44 @@ function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canA
     setAddedTheory(true);
   };
   const isTheory = active && (m.book || addedTheory);
+  // 이 수가 실제로 두어진 마스터 대국(대국자/레이팅/결과) — 목록에서 클릭하면 그 대국의 마지막 포지션을 연다.
+  const [masterGames, setMasterGames] = useState([]);
+  const [loadingMasterGames, setLoadingMasterGames] = useState(false);
+  useEffect(() => {
+    setMasterGames([]); setLoadingMasterGames(false);
+    if (!active) return;
+    let cancelled = false;
+    setLoadingMasterGames(true);
+    fetchMasterTopGames([...sans, san]).then((gs) => { if (!cancelled) { setMasterGames(gs); setLoadingMasterGames(false); } }).catch(() => { if (!cancelled) setLoadingMasterGames(false); });
+    return () => { cancelled = true; };
+  }, [active, sansKey, san]);
   return {
     active, sans, san, m, ply, title, kind, evTxt, extraArrows, explain, ownExplain,
     editing, setEditing, draft, setDraft, canEditExpl, saveExpl, delExpl, explainLong,
     showExpl, setShowExpl, editKey, devEdit, setDevEdit, nameDraft, setNameDraft, kwDraft, setKwDraft,
     openDevEdit, saveMeta, toggleUnbook, toggleKw, isPunishable, curated, stats, mistakes, analyzing,
     expectedPuzzleId, existingPuzzle, addAsTheory, isTheory, canEdit, canAdd, bumpContent, engine, chesscom,
+    masterGames, loadingMasterGames,
   };
 }
-// 체스보드 바로 아래(왼쪽 칼럼)에 자리 — 뒤로가기 + 주요 분기점 + "현재 수" 헤더에 해당하는 정보.
-function FocusHead({ fa, onBack, onOpenPuzzle }) {
+// 체스보드 하단(왼쪽 칼럼)에 기존에 쓰던 집중학습 UI를 그대로 배치한다. 오른쪽 칼럼은
+// 집중학습 여부와 무관하게 항상 수 블록 목록을 보여준다(LearnTab에서 분기하지 않음).
+function FocusPanel({ fa, onBack, onOpenPuzzle, onJump, onOpenMasterGame }) {
   if (!fa.active) return null;
-  const { san, ply, m, title, kind, evTxt, isTheory, canEdit, canAdd, addAsTheory, expectedPuzzleId, existingPuzzle, sans, bumpContent } = fa;
+  const {
+    sans, san, m, ply, title, kind, evTxt, extraArrows, explain, ownExplain, editing, setEditing, draft, setDraft,
+    canEditExpl, saveExpl, delExpl, explainLong, showExpl, setShowExpl, editKey, devEdit, setDevEdit,
+    nameDraft, setNameDraft, kwDraft, openDevEdit, saveMeta, toggleUnbook, toggleKw, isPunishable, curated,
+    stats, mistakes, analyzing, canEdit, canAdd, engine, chesscom, isTheory, addAsTheory, expectedPuzzleId, existingPuzzle,
+    masterGames, loadingMasterGames,
+  } = fa;
+  const punish = curated;
+  const [openingGameId, setOpeningGameId] = useState(null);
+  const handleOpenGame = async (id) => {
+    if (!onOpenMasterGame || openingGameId) return;
+    setOpeningGameId(id);
+    try { await onOpenMasterGame(id); } finally { setOpeningGameId(null); }
+  };
   return (
     <div>
       <div className="flex items-center justify-between" style={{ marginBottom: 10, gap: 8 }}>
@@ -1448,36 +1506,18 @@ function FocusHead({ fa, onBack, onOpenPuzzle }) {
           {expectedPuzzleId && onOpenPuzzle && <button onClick={() => onOpenPuzzle(expectedPuzzleId, existingPuzzle)} className="press" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 15px", borderRadius: 10, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", fontWeight: 800, fontSize: 13, border: "none", cursor: "pointer", boxShadow: "0 3px 0 #7A5E22" }}><Play size={14} /> 퍼즐 풀기</button>}
         </div>
       </div>
-      {(canEdit || canAdd) && <BranchBanner sentKey={sans.join(" ")} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} />}
-      <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "16px 18px", border: "1px solid #DCCBA8", boxShadow: "0 3px 0 #D7C19A" }}>
-        <div className="flex items-center gap-3">
-          <CircleBadge kind={kind} big />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 26, fontWeight: 800, color: T.ink, lineHeight: 1.05 }}>{moveNumber(ply)}{m.san}</div>
-            {title && <div style={{ fontSize: 14, color: T.cocoa || "#5A3A22", fontWeight: 800, marginTop: 4, lineHeight: 1.25 }}>{title}</div>}
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 18, fontWeight: 800, color: QCOLOR[kind] }}>{evTxt || (kind === "book" ? "이론" : "—")}</div>
-            <div style={{ fontSize: 11, color: QCOLOR[kind], fontWeight: 700 }}>{QLABEL[kind]}</div>
-          </div>
+      {/* 헤더: 아이콘 · 수/이름(크게) · 평가치 */}
+      <div className="flex items-center gap-3" style={{ marginBottom: 12 }}>
+        <CircleBadge kind={kind} big />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 30, fontWeight: 800, color: T.ivoryHi, lineHeight: 1.05, textShadow: "0 1px 2px rgba(0,0,0,.5)" }}>{moveNumber(ply)}{m.san}</div>
+          {title && <div style={{ fontSize: 16, color: T.brassHi, fontWeight: 800, marginTop: 4, lineHeight: 1.25 }}>{title}</div>}
         </div>
-        <div className="flex flex-wrap gap-1" style={{ marginTop: 10 }}>{deriveKeywords(m).map((k) => KW[k] && <span key={k} style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: KW[k].bg, color: KW[k].fg }}>{k}</span>)}</div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontFamily: "ui-monospace,monospace", fontSize: 20, fontWeight: 800, color: QCOLOR[kind] }}>{evTxt || (kind === "book" ? "이론" : "—")}</div>
+          <div style={{ fontSize: 11, color: QCOLOR[kind], fontWeight: 700 }}>{QLABEL[kind]}</div>
+        </div>
       </div>
-    </div>
-  );
-}
-// 수 블록 자리(오른쪽 칼럼)에 자리 — 미니 애니메이션 · 해설 · 개발자 편집 · 퍼즐 안내 · chess.com 통계.
-function FocusBody({ fa, onJump }) {
-  if (!fa.active) return null;
-  const {
-    sans, san, m, ply, title, kind, extraArrows, explain, ownExplain, editing, setEditing, draft, setDraft,
-    canEditExpl, saveExpl, delExpl, explainLong, showExpl, setShowExpl, editKey, devEdit, setDevEdit,
-    nameDraft, setNameDraft, kwDraft, openDevEdit, saveMeta, toggleUnbook, toggleKw, isPunishable, curated,
-    stats, mistakes, analyzing, canEdit, canAdd, engine, chesscom,
-  } = fa;
-  const punish = curated;
-  return (
-    <div>
       {/* 미니보드(좌) + 해설(우) */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flexShrink: 0 }}>
@@ -1547,6 +1587,22 @@ function FocusBody({ fa, onJump }) {
           {engine && engine.status === "ready" ? "이 실수를 엔진이 분석해 응징 수순을 퍼즐 탭에 추가했습니다." : "엔진이 준비되면 이 실수의 응징 수순이 퍼즐로 저장됩니다."}
         </div>
       )}
+      {/* 이 수가 두어진 마스터 대국 — 클릭하면 집중학습을 종료하고 그 대국의 마지막 포지션 + 기보를 연다 */}
+      <div style={{ background: T.paper, border: "1px solid #DCCBA8", borderRadius: 12, padding: 13, marginTop: 12 }}>
+        <div className="flex items-center gap-2" style={{ marginBottom: 8 }}><span style={{ fontSize: 12.5, fontWeight: 800, color: T.ink }}>이 수가 두어진 마스터 대국</span></div>
+        {loadingMasterGames ? <p style={{ fontSize: 12, color: T.inkSoft }}>불러오는 중…</p>
+          : masterGames.length === 0 ? <p style={{ fontSize: 12, color: T.inkSoft }}>일치하는 마스터 대국을 찾지 못했습니다.</p>
+            : masterGames.map((g) => (
+              <button key={g.id} onClick={() => handleOpenGame(g.id)} disabled={!!openingGameId} className="press text-left" style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 2px", borderTop: "1px solid #E4D5B6", background: "none", border: "none", borderTopWidth: 1, borderTopStyle: "solid", borderTopColor: "#E4D5B6", cursor: openingGameId ? "default" : "pointer", opacity: openingGameId && openingGameId !== g.id ? 0.5 : 1 }}>
+                <div className="flex items-center justify-between" style={{ fontSize: 12.5 }}>
+                  <span>⬜ <b style={{ color: T.ink }}>{(g.white && g.white.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.white && g.white.rating) ?? "—"}</span></span>
+                  <span style={{ fontWeight: 800, fontFamily: "ui-monospace,monospace", color: g.winner === "white" ? T.best : g.winner === "black" ? T.blunder : T.inkSoft }}>{g.winner === "white" ? "1–0" : g.winner === "black" ? "0–1" : "½–½"}</span>
+                </div>
+                <div style={{ fontSize: 12.5, marginTop: 2 }}>⬛ <b style={{ color: T.ink }}>{(g.black && g.black.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.black && g.black.rating) ?? "—"}</span></div>
+                <div style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 2 }}>{g.year || ""}{openingGameId === g.id ? " · 기보를 불러오는 중…" : ""}</div>
+              </button>
+            ))}
+      </div>
       {/* chess.com 통계 */}
       <div style={{ background: T.paper, border: "1px solid #DCCBA8", borderRadius: 12, padding: 13, marginTop: 12 }}>
         <div className="flex items-center gap-2" style={{ marginBottom: 8 }}><span style={{ fontSize: 12.5, fontWeight: 800, color: T.ink }}>내 chess.com 전적</span></div>
@@ -1788,6 +1844,15 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     const pnode = snapNode(tSans); const mm = pnode && pnode.moves.find((x) => stripSuffix(x.san) === stripSuffix(tSan));
     setFocus({ sans: [...tSans], san: tSan, m: mm || { san: tSan }, ply: tSans.length, isNew: false, name });
   };
+  // (기능) 집중학습의 마스터 대국을 클릭 — 집중학습을 종료하고 그 대국의 마지막 포지션으로 보드를 옮긴 뒤,
+  // 보드 상단 SequenceBar에 그 대국의 전체 기보가 표시되도록 sans를 그 대국의 전체 수순으로 교체한다.
+  const onOpenMasterGame = async (gameId) => {
+    try {
+      const gameSans = await fetchMasterGamePgn(gameId);
+      if (!gameSans || !gameSans.length) return;
+      setFocus(null); setSans(gameSans); setFuture([]); setSel(null); setLastQ(null);
+    } catch { /* 네트워크 실패 시 조용히 무시 — 집중학습 화면은 그대로 유지 */ }
+  };
 
   const node = snapNode(sans);
   const openingName = node && node.opening ? node.opening.name : null;
@@ -1841,9 +1906,9 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
             </div>
           </div>
         </div>
-        {/* (UI) 체스보드 하단 — 주요 분기점 + 현재 수 블록(비어있던 공간을 채움). 집중학습 중엔 같은 자리에 뒤로가기+분기점+수 정보가 병합되어 표시된다. */}
+        {/* (UI) 체스보드 하단 — 주요 분기점 + 현재 수 블록(비어있던 공간을 채움). 집중학습 중엔 같은 자리에 기존 집중학습 UI가 그대로 표시된다. */}
         <div style={{ marginTop: 16 }}>
-          {focus ? <FocusHead fa={fa} onBack={exitFocus} onOpenPuzzle={onOpenPuzzle} /> : (
+          {focus ? <FocusPanel fa={fa} onBack={exitFocus} onOpenPuzzle={onOpenPuzzle} onJump={enterFocusAt} onOpenMasterGame={onOpenMasterGame} /> : (
             <>
               {/* (UI2) 코치 말풍선 + (UI6) 좌상단 "주요 분기점" 라벨 */}
               <div style={{ position: "relative", background: T.paper, borderRadius: 12, padding: "12px 14px", border: "1px solid #DCCBA8", marginBottom: 16, boxShadow: "0 3px 0 #D7C19A" }}>
@@ -1884,8 +1949,8 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
       </div>
       <div>
         <div>
-          {focus ? <FocusBody fa={fa} onJump={enterFocusAt} /> : (
-            <>
+          {/* (UX) 집중학습 중에도 오른쪽 칼럼은 항상 수 블록 목록을 그대로 보여준다 */}
+          <>
               <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginBottom: 10 }}>
                 <div className="inline-flex" style={{ borderRadius: 9, background: "rgba(0,0,0,.06)", padding: 3, gap: 3 }} title="통계 범위: 전체 유저 대국 / 마스터 대국만">
                   <button onClick={() => setMode("normal")} className="press" style={{ padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11.5, fontWeight: 800, background: mode === "normal" ? T.ebony2 : "transparent", color: mode === "normal" ? T.brassHi : T.inkSoft }}>전체</button>
@@ -1918,8 +1983,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
                   </>
                 );
               })()}
-            </>
-          )}
+          </>
         </div>
       </div>
     </div>
