@@ -198,7 +198,13 @@ function useEngine() {
       if (line.startsWith("info") && cb.multi) {
         const mp = line.match(/multipv (\d+)/); const pv = line.match(/ pv ([a-h][1-8][a-h][1-8][qrbn]?)/);
         if (mp && pv && sc) cb.lines[parseInt(mp[1], 10)] = { uci: pv[1], cp: sc[1] === "cp" ? parseInt(sc[2], 10) : null, mate: sc[1] === "mate" ? parseInt(sc[2], 10) : null };
-      } else if (sc && !cb.multi) cb.last = sc[1] === "mate" ? { mate: parseInt(sc[2], 10) } : { cp: parseInt(sc[2], 10) };
+      } else if (sc && !cb.multi) {
+        cb.last = sc[1] === "mate" ? { mate: parseInt(sc[2], 10) } : { cp: parseInt(sc[2], 10) };
+        // (기능1) go depth N 한 번의 탐색 안에서도 스톡피시는 얕은 depth부터 점점 깊여 결과를 낸다.
+        // 이 중간 info 라인을 그대로 콜백으로 흘려보내면 최종 depth를 기다리지 않고도
+        // 점진적으로 갱신되는 평가치를 보여줄 수 있다(추가 탐색 없이 공짜로 얻는 진행 표시).
+        if (cb.onProgress) { const dm = line.match(/^info depth (\d+)/); cb.onProgress({ ...cb.last, depth: dm ? parseInt(dm[1], 10) : null }); }
+      }
       if (line.startsWith("bestmove")) {
         const bm = (line.split(" ")[1] || "").trim(); const d = queue.current.shift(); running.current = false;
         if (d) { if (d.multi) d.resolve(Object.keys(d.lines).sort((a, b) => a - b).map((k) => d.lines[k])); else d.resolve(d.last ? { ...d.last, best: bm } : (bm ? { best: bm } : null)); }
@@ -222,8 +228,8 @@ function useEngine() {
     tryNext();
     return () => { killed = true; try { worker && worker.terminate(); } catch (_) {} };
   }, [pump]);
-  const evaluate = useCallback((fen, depth = 14) => new Promise((resolve) => {
-    queue.current.push({ resolve, last: null, cmds: ["setoption name MultiPV value 1", "position fen " + fen, "go depth " + depth] }); pump();
+  const evaluate = useCallback((fen, depth = 14, onProgress) => new Promise((resolve) => {
+    queue.current.push({ resolve, last: null, onProgress, cmds: ["setoption name MultiPV value 1", "position fen " + fen, "go depth " + depth] }); pump();
   }), [pump]);
   const evaluateMulti = useCallback((fen, depth = 12, multipv = 5) => new Promise((resolve) => {
     queue.current.push({ resolve, multi: true, lines: {}, cmds: ["setoption name MultiPV value " + multipv, "position fen " + fen, "go depth " + depth] }); pump();
@@ -1109,7 +1115,12 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode, sortB
     const baseWhite = ply % 2 === 0 ? 1 : -1;
     const childWhite = (ply + 1) % 2 === 0 ? 1 : -1;
     (async () => {
-      const be = await engine.evaluate(sansToFen(sans), 16);
+      // (기능1) 최종 depth까지 기다리지 않고, 얕은 depth부터 실시간으로 평가치를 갱신해 보여준다.
+      const onEvalProgress = (partial) => {
+        if (cancelled || !partial) return;
+        setPosEval(partial.mate != null ? (partial.mate > 0 ? 1000 : -1000) * baseWhite : partial.cp * baseWhite);
+      };
+      const be = await engine.evaluate(sansToFen(sans), 16, onEvalProgress);
       if (cancelled || !be) return;
       setPosEval(be.mate != null ? (be.mate > 0 ? 1000 : -1000) * baseWhite : be.cp * baseWhite);
       // 비이론 수 9개 보장: 엔진 평가 상위 수로 보충.
@@ -1136,7 +1147,14 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode, sortB
       const list = cur.map((m) => m.san);
       for (const san of list) {
         if (cancelled) break;
-        const ev = await engine.evaluate(sansToFen([...sans, san]), 15);
+        // (기능1) 이 수는 낮은 depth 결과부터 즉시 반영 → 등급/정렬이 계산 도중 자연스럽게 갱신되며
+        // "엔진이 계산하며 평가를 수정하는" 과정이 시각적으로 보인다. 최종 depth에서 한 번 더 확정.
+        const onMoveProgress = (partial) => {
+          if (cancelled || !partial) return;
+          const live = partial.mate != null ? { mate: partial.mate * childWhite } : { cp: partial.cp * childWhite };
+          setMoves((prev) => prev.map((x) => x.san === san ? { ...x, live } : x));
+        };
+        const ev = await engine.evaluate(sansToFen([...sans, san]), 15, onMoveProgress);
         if (cancelled || !ev) continue;
         const live = ev.mate != null ? { mate: ev.mate * childWhite } : { cp: ev.cp * childWhite };
         setMoves((prev) => prev.map((x) => x.san === san ? { ...x, live } : x));
@@ -1577,43 +1595,11 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const { moves, posGames, engineNote, posEval } = useMergedMoves(sans, engine, liveOn, extra[key], contentVer, mode, sortBy);
   useEffect(() => { onFocusActive && onFocusActive(!!focus); }, [focus]);
   useEffect(() => { setShowAllNb(false); }, [key]);   // (UX1) 위치가 바뀌면 더보기 접기
-  // 각 단계에서 탁월한 수→기물 희생, 부정확한 수→우위 점하기, 실수/블런더→실수 응징 퍼즐 자동 생성
-  const autoRef = useRef(new Set());
-  const genMounted = useRef(true);
-  useEffect(() => () => { genMounted.current = false; }, []);
-  useEffect(() => {
-    if (!liveOn || engine.status !== "ready" || autoRef.current.has(key)) return;
-    const brilliants = moves.filter((m) => m.kind === "brilliant");
-    const inacc = moves.filter((m) => m.kind === "inaccuracy");
-    const bad = moves.filter((m) => m.kind === "mistake" || m.kind === "blunder");
-    if (!brilliants.length && !inacc.length && !bad.length) return;
-    autoRef.current.add(key);
-    const ok = () => genMounted.current;   // 언마운트 시에만 취소(수 목록 갱신으로는 취소하지 않음)
-    if (brilliants.length && sans.length >= 1) {
-      const b = brilliants[0];
-      const op = b.name || (snapNode([...sans, b.san]) || {}).opening?.name || "오프닝";
-      genAdvantageLine(engine, [...sans, b.san], { target: 110 }).then((line) => {
-        if (!ok()) return;
-        onSavePuzzle({ id: "sac|" + key + "|" + stripSuffix(b.san), theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [b.san, ...line], steps: [], auto: true });
-      });
-    }
-    if (inacc.length) {
-      const pick = inacc[Math.floor(Math.random() * inacc.length)];
-      genAdvantageLine(engine, [...sans, pick.san], { target: 120 }).then((line) => {
-        if (!ok() || line.length < 1) return;
-        const op = pick.name || (snapNode([...sans, pick.san]) || {}).opening?.name || "오프닝";
-        onSavePuzzle({ id: "adv|" + key + "|" + stripSuffix(pick.san), theme: "advantage", name: puzzleName("advantage", [...sans], pick.san), opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
-      });
-    }
-    if (bad.length) {
-      const pick = bad[Math.floor(Math.random() * bad.length)];
-      genAdvantageLine(engine, [...sans, pick.san], { target: 170 }).then((line) => {
-        if (!ok() || line.length < 1) return;
-        const op = pick.name || (snapNode([...sans, pick.san]) || {}).opening?.name || "오프닝";
-        onSavePuzzle({ id: key + "|" + pick.san, theme: "punish", name: puzzleName("punish", [...sans], pick.san), opening: op, setupSans: [...sans], mistakeSan: pick.san, solution: line, steps: [], auto: true });
-      });
-    }
-  }, [key, moves, engine.status, liveOn]);
+  // (기능2) 퍼즐 자동 생성은 사용자가 "학습" 버튼을 눌러 FocusMode에 실제로 진입했을 때만 일어난다.
+  // 예전엔 이 트리 탐색 화면을 그냥 넘겨보기만 해도(학습 버튼을 누르지 않아도) moves 배열이
+  // 갱신될 때마다 여기서도 똑같이 퍼즐을 만들었는데, 이때의 kind는 엔진이 아직 얕은 깊이로만
+  // 평가한 상태라 이론 수가 실수로 오분류되거나, 포지션 전환 중간의 불안정한 상태를 그대로
+  // 저장해 버리는 등 오생성 버그의 근원이었다. FocusMode(아래 onSavePuzzle 호출부)만으로 충분하다.
 
   const arrows = useMemo(() => moves.filter((m) => m.book).map((m) => { const info = sanSrc(board, m.san, color); return info && info.from ? { from: info.from, to: info.to, adopt: m.adopt } : null; }).filter(Boolean), [moves, board, color]);
   const legalTargets = useMemo(() => sel ? legalDests(board, sel[0], sel[1], color, ep) : [], [sel, board, color, ep]);
@@ -1988,6 +1974,25 @@ function puzzleName(theme, setupSans, mistakeSan) {
   if (theme === "sacrifice") return base + "에서 탁월한 수 찾기";
   if (theme === "advantage") return base + "에서 우위 점하기";
   return base + "에서 " + moveNumber(setupSans.length) + stripSuffix(mistakeSan || "") + " 응징하기";
+}
+// (기능2) 저장 직전 최종 안전장치: setup+solution 전체를 시작 위치부터 다시 재생하며 각 수가
+// "그 시점에 둘 차례인 쪽"의 합법수인지 검증한다. 하나라도 어긋나면(불법수·차례 뒤바뀜 등) 저장을 막는다.
+function isPuzzleSequenceValid(pz) {
+  try {
+    const setup = [...(pz.setupSans || []), pz.mistakeSan].filter(Boolean);
+    const solution = pz.solution || [];
+    if (!setup.length || !solution.length) return false;
+    let board = startBoard();
+    let ply = 0;
+    for (const san of [...setup, ...solution]) {
+      const color = ply % 2 === 0 ? "w" : "b";
+      const info = sanSrc(board, san, color);
+      if (!info) return false;
+      board = applySan(board, san, color);
+      ply++;
+    }
+    return true;
+  } catch { return false; }
 }
 // (UX6) 퍼즐 고유번호: id로부터 안정적으로 도출(같은 위치·수 → 같은 번호, 사용자 간 공통)
 function puzzleNo(id) { let h = 2166136261; const s = String(id); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) % 900000 + 100000; } // 6자리
@@ -3315,7 +3320,7 @@ export default function App() {
   const logout = useCallback(() => { authLogout(); setUser(null); setUid(null); setDevOn(false); setConfirmLogout(false); }, []);
   const unlockOpening = useCallback((keyStr) => { let isNew = false; setUnlocked((p) => { if (p.has(keyStr)) return p; isNew = true; const n = new Set(p); const parts = keyStr.split(" ").filter(Boolean); for (let i = 1; i <= parts.length; i++) n.add(parts.slice(0, i).join(" ")); return n; }); if (isNew) setNewUnlocks((n) => n + 1); return isNew; }, []);
   const onLearned = useCallback((name) => { setToast({ name }); setTimeout(() => setToast(null), 2600); }, []);
-  const onSavePuzzle = useCallback((pz) => { if (deletedPuzzles.has(pz.id) && !solved.has(pz.id)) return; setPuzzles((prev) => { if (prev.some((x) => x.id === pz.id)) return prev; puzzleShare(pz); return [...prev, pz]; }); }, [deletedPuzzles, solved]);
+  const onSavePuzzle = useCallback((pz) => { if (deletedPuzzles.has(pz.id) && !solved.has(pz.id)) return; if (!isPuzzleSequenceValid(pz)) { console.warn("퍼즐 저장 거부(불법 수순):", pz.id); return; } setPuzzles((prev) => { if (prev.some((x) => x.id === pz.id)) return prev; puzzleShare(pz); return [...prev, pz]; }); }, [deletedPuzzles, solved]);
   const onDeletePuzzle = useCallback((id) => { setPuzzles((prev) => prev.filter((x) => x.id !== id)); setDeletedPuzzles((p) => { const n = new Set(p); n.add(id); return n; }); }, []);
   const onSolved = useCallback((id) => { const already = solved.has(id); if (!already) setSolved((p) => { const n = new Set(p); n.add(id); return n; }); if (user && !already) { const no = puzzleNo(id); puzzleSolveInc(no).then((c) => { if (c != null) setSolveCounts((m) => ({ ...m, [no]: c })); }); } }, [user, solved]);
   const switchTab = (k) => { if (k === "dex") setNewUnlocks(0); setNavNonce((n) => n + 1); setTab(k); };
