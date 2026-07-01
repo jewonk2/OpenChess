@@ -14,7 +14,7 @@
  *   옵션: MAX_PLY(기본10) BREADTH(기본5) DELAY_MS(기본 700, 리체스 예의)
  */
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 
 const LICHESS = "https://explorer.lichess.ovh/lichess";
 const MAX_PLY = +(process.env.MAX_PLY || 10);
@@ -33,6 +33,23 @@ function sinceParam(monthsBack) {
 const SINCE = sinceParam(STATS_WINDOW_MONTHS);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// src/App.jsx 에 인라인된 "const SNAP = ...DATA 마커... {...};" 블록을 최신 데이터로 교체.
+// 앱은 src/data/openings.json 을 런타임에 읽지 않고 이 인라인 블록만 사용하므로,
+// 이 동기화가 없으면 refresh 를 아무리 돌려도 화면에는 절대 반영되지 않는다(과거 버그의 원인).
+function injectIntoApp(data) {
+  const appPath = "src/App.jsx";
+  const src = readFileSync(appPath, "utf8");
+  const lines = src.split("\n");
+  const idx = lines.findIndex((l) => l.startsWith("const SNAP = "));
+  if (idx === -1) { console.error("경고: src/App.jsx 에서 'const SNAP = ' 라인을 찾지 못해 인라인 동기화를 건너뜀"); return; }
+  const marker = "/*__DATA__*/ ";
+  const mi = lines[idx].indexOf(marker);
+  if (mi === -1) { console.error("경고: /*__DATA__*/ 마커를 찾지 못해 인라인 동기화를 건너뜀"); return; }
+  const prefix = lines[idx].slice(0, mi + marker.length);
+  lines[idx] = prefix + JSON.stringify(data) + ";";
+  writeFileSync(appPath, lines.join("\n"));
+}
 
 /* ---- 최소 UCI 드라이버 (로컬 Stockfish 바이너리) ---- */
 function makeEngine() {
@@ -138,10 +155,17 @@ async function main() {
     const mainIdx = moves.reduce((bi, m, i, a) => (m.games > (a[bi]?.games || -1) ? i : bi), 0);
     if (moves[mainIdx] && !moves[mainIdx].name) moves[mainIdx].isMain = true;
     tree[key] = { opening: data.opening || null, moves };
-    if (count % 20 === 0) { console.error("evaluated", count, "moves,", Object.keys(tree).length, "nodes"); writeFileSync("src/data/openings.json", JSON.stringify({ tree, roots: ["e4", "d4"], maxPly: MAX_PLY })); }
+    if (count % 20 === 0) {
+      console.error("evaluated", count, "moves,", Object.keys(tree).length, "nodes");
+      const snapshot = { tree, roots: ["e4", "d4"], maxPly: MAX_PLY };
+      writeFileSync("src/data/openings.json", JSON.stringify(snapshot));
+      injectIntoApp(snapshot);
+    }
   }
   eng.quit();
-  writeFileSync("src/data/openings.json", JSON.stringify({ tree, roots: ["e4", "d4"], maxPly: MAX_PLY }));
-  console.error("DONE:", Object.keys(tree).length, "nodes,", count, "moves -> src/data/openings.json");
+  const finalSnapshot = { tree, roots: ["e4", "d4"], maxPly: MAX_PLY };
+  writeFileSync("src/data/openings.json", JSON.stringify(finalSnapshot));
+  injectIntoApp(finalSnapshot);
+  console.error("DONE:", Object.keys(tree).length, "nodes,", count, "moves -> src/data/openings.json + src/App.jsx 인라인 동기화 완료");
 }
 main().catch((e) => { console.error(e); process.exit(1); });
