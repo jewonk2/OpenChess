@@ -2551,6 +2551,8 @@ function AccountChessStats({ chesscom, username, onOpenOpening }) {
 function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, chesscom, user, isDev, isCodev, devOn, setDevOn, codevOn, setCodevOn, canManageCodev, canAdd, canEdit, bumpContent, contentVer, openAuth, earnedTitles, currentTitle, onEquipTitle, onOpenOpening }) {
   const [cc, setCc] = useState(profile.chesscom || "");
   const [codevId, setCodevId] = useState("");
+  const [codevErr, setCodevErr] = useState("");
+  const [codevBusy, setCodevBusy] = useState(false);
   const [ccState, setCcState] = useState("idle");   // idle | checking | failed
   const [pending, setPending] = useState(null);
   useEffect(() => { setCc(profile.chesscom || ""); }, [profile.chesscom]);
@@ -2561,10 +2563,23 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
     try { const p = await fetchChesscomProfile(name); setPending(p); setCcState("idle"); }
     catch { setCcState("failed"); setTimeout(() => setCcState("idle"), 1700); }
   };
-  const confirmLink = () => { setProfile({ ...profile, chesscom: pending.username }); setPending(null); };
+  // (UI3) chess.com 아이디는 대소문자를 구분하지 않는 계정이므로 항상 소문자로 정규화해 저장한다
+  // (그렇지 않으면 같은 계정을 다른 대소문자로 다시 연동할 때 다른 값으로 취급되는 오류가 있었음).
+  const confirmLink = () => { setProfile({ ...profile, chesscom: (pending.username || "").toLowerCase() }); setPending(null); };
   const changeChesscom = () => { setProfile({ ...profile, chesscom: "" }); setCc(""); setCcState("idle"); };
   const card = { background: T.paper, borderRadius: 12, padding: 16, border: "1px solid #DCCBA8", marginTop: 14 };
-  const addCodev = async () => { const id = codevId.trim(); if (!ALNUM.test(id) || id === DEV_ACCOUNT) return; if (!CONTENT.codev.includes(id)) CONTENT.codev.push(id); await bumpContent(); setCodevId(""); };
+  // (UX6) 존재하지 않는 아이디를 공동 개발자로 등록할 수 없도록, 추가 전 실제 계정 존재 여부를 확인한다.
+  const addCodev = async () => {
+    const id = codevId.trim();
+    if (!ALNUM.test(id) || id === DEV_ACCOUNT) { setCodevErr("아이디 형식이 올바르지 않습니다."); return; }
+    setCodevBusy(true); setCodevErr("");
+    const found = await userProfile(id);
+    setCodevBusy(false);
+    if (!found) { setCodevErr("존재하지 않는 아이디입니다."); return; }
+    if (!CONTENT.codev.includes(found.username)) CONTENT.codev.push(found.username);
+    await bumpContent();
+    setCodevId(""); setCodevErr("");
+  };
   const removeCodev = async (id) => { CONTENT.codev = CONTENT.codev.filter((x) => x !== id); await bumpContent(); };
   return (
     <div className="max-w-xl">
@@ -2613,7 +2628,8 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
       {canManageCodev && (
         <div style={card}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>공동 개발자 지정</div>
-          <div className="flex gap-2"><input value={codevId} onChange={(e) => setCodevId(e.target.value)} placeholder="아이디 (영문+숫자)" style={{ flex: 1, padding: "9px 11px", borderRadius: 9, border: "1px solid #C9B58C", background: "#fff", color: T.ink }} /><button onClick={addCodev} className="press" style={{ padding: "9px 16px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer" }}>추가</button></div>
+          <div className="flex gap-2"><input value={codevId} onChange={(e) => { setCodevId(e.target.value); setCodevErr(""); }} placeholder="아이디 (영문+숫자)" style={{ flex: 1, padding: "9px 11px", borderRadius: 9, border: "1px solid #C9B58C", background: "#fff", color: T.ink }} /><button onClick={addCodev} disabled={codevBusy} className="press" style={{ padding: "9px 16px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 700, border: "none", cursor: "pointer" }}>{codevBusy ? "확인 중…" : "추가"}</button></div>
+          {codevErr && <p style={{ fontSize: 11, color: T.blunder, marginTop: 6 }}>{codevErr}</p>}
           <p style={{ fontSize: 11, color: T.inkSoft, marginTop: 6 }}>공동 개발자는 트리·분기점·해설을 <b>추가</b>만 할 수 있고 수정·삭제는 불가합니다.</p>
         </div>
       )}
@@ -3182,14 +3198,15 @@ function AuthModal({ onClose, onAuth, initialMode }) {
   const title = mode === "login" ? "다시 오신 걸 환영해요" : mode === "signup" ? "OpenChess 시작하기" : "비밀번호 찾기";
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 340, background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ position: "relative", width: "100%", maxWidth: 340, background: "linear-gradient(180deg,#F2E8D5,#E2D2B2)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 20px 50px -10px rgba(0,0,0,.7)" }}>
+        {/* (UI6) 창 닫기 버튼은 항상 블록 우상단 고정 */}
+        <button onClick={onClose} className="press" style={{ position: "absolute", top: 12, right: 12, zIndex: 10, width: 28, height: 28, borderRadius: 8, border: "none", background: "#0002", color: T.ink, cursor: "pointer" }}>✕</button>
         <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 2, marginBottom: 6, marginTop: -4 }}>
           <Mascot name="milku" emotion={mode === "login" ? "wink" : mode === "signup" ? "great" : "surprise"} size={92} />
           <Mascot name="kokoa" emotion={mode === "signup" ? "celebrate" : "happy"} size={92} />
         </div>
-        <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 14, paddingRight: 30 }}>
           <div style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>{title}</div>
-          <button onClick={onClose} className="press" style={{ width: 28, height: 28, borderRadius: 8, border: "none", background: "#0002", color: T.ink, cursor: "pointer" }}>✕</button>
         </div>
         {mode === "reset" ? (sent ? (
           <>
