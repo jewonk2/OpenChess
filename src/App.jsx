@@ -3,7 +3,7 @@ import {
   GraduationCap, Library, Settings, ChevronLeft, ChevronRight, ChevronsLeft,
   Lock, Crown, Sparkles, Info, Book, BookOpen, ArrowUpDown, Cpu, Wifi, WifiOff,
   ChevronRight as Crumb, Star, ThumbsUp, Check, Play, ArrowLeft, RotateCcw, Search, X,
-  Users, UserPlus, UserCheck, Clock, Eye, EyeOff,
+  Users, UserPlus, UserCheck, Clock, Eye, EyeOff, Copy, ClipboardPaste, Lightbulb,
 } from "lucide-react";
 
 /* ============================================================ 디자인 토큰 ============================================================ */
@@ -85,6 +85,26 @@ function startBoard() {
   for (let c = 0; c < 8; c++) { b[0][c] = { c: "b", t: back[c] }; b[1][c] = { c: "b", t: "P" }; b[6][c] = { c: "w", t: "P" }; b[7][c] = { c: "w", t: back[c] }; }
   return b;
 }
+// (UI2) FEN 붙여넣기 미리보기용 — 기물 배치(1번째 필드)만 8x8 보드로 변환, 실패 시 null.
+function fenToBoard(fen) {
+  const rows = (fen || "").trim().split(/\s+/)[0]?.split("/");
+  if (!rows || rows.length !== 8) return null;
+  const board = Array.from({ length: 8 }, () => Array(8).fill(null));
+  for (let r = 0; r < 8; r++) {
+    let c = 0;
+    for (const ch of rows[r]) {
+      if (/[1-8]/.test(ch)) { c += parseInt(ch, 10); continue; }
+      if (c > 7) return null;
+      const t = ch.toUpperCase();
+      if (!"PNBRQK".includes(t)) return null;
+      board[r][c] = { c: ch === t ? "w" : "b", t };
+      c++;
+    }
+    if (c !== 8) return null;
+  }
+  return board;
+}
+function looksLikeFen(s) { return /^[pnbrqkPNBRQK1-8]+(\/[pnbrqkPNBRQK1-8]+){7}\b/.test((s || "").trim()); }
 function clearPath(b, r, c, dr, dc) {
   const sr = Math.sign(dr - r), sc = Math.sign(dc - c); let rr = r + sr, cc = c + sc;
   while (rr !== dr || cc !== dc) { if (b[rr][cc]) return false; rr += sr; cc += sc; } return true;
@@ -1003,6 +1023,73 @@ function SequenceBar({ sans, onJump }) {
         </span>
       ))}
     </div>
+  );
+}
+// (UI2) 현재 기보 복사 + FEN/PGN 붙여넣기. PGN은 검증 후 학습 탭에 그대로 이어서 둘 수 있는 수순으로 불러오고,
+// FEN은 이 앱이 시작 위치부터의 수순만 다루는 구조라 미리보기(읽기 전용)로만 보여준다.
+function NotationTools({ sans, onLoadPgn }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const [fenPreview, setFenPreview] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const iconBtn = { width: 26, height: 26, borderRadius: 7, background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.18)", color: T.brassHi, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 };
+  const copy = async () => {
+    const parts = []; sans.forEach((san, i) => { if (i % 2 === 0) parts.push((i / 2 + 1) + "." + san); else parts[parts.length - 1] += " " + san; });
+    const out = parts.length ? parts.join(" ") : "(시작 위치)";
+    try { await navigator.clipboard.writeText(out); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { }
+  };
+  const submit = () => {
+    const raw = text.trim();
+    if (!raw) { setErr("붙여넣을 내용을 입력하세요."); return; }
+    if (looksLikeFen(raw)) {
+      const b = fenToBoard(raw);
+      if (!b) { setErr("올바른 FEN 형식이 아닙니다."); return; }
+      setFenPreview(b); setOpen(false); setText(""); setErr("");
+      return;
+    }
+    const moves = parsePgnMoves(raw);
+    if (!moves.length) { setErr("인식할 수 있는 기보가 없습니다."); return; }
+    let board = startBoard(), ok = true;
+    for (let i = 0; i < moves.length; i++) {
+      const color = i % 2 === 0 ? "w" : "b";
+      if (!sanSrc(board, moves[i], color)) { ok = false; break; }
+      board = applySan(board, moves[i], color);
+    }
+    if (!ok) { setErr("기보에 불법적인 수가 포함되어 있습니다."); return; }
+    onLoadPgn(moves); setOpen(false); setText(""); setErr("");
+  };
+  return (
+    <>
+      <div className="flex items-center gap-1">
+        <button onClick={copy} title="현재 기보 복사" className="press" style={iconBtn}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
+        <button onClick={() => { setOpen(true); setErr(""); }} title="FEN/PGN 붙여넣기" className="press" style={iconBtn}><ClipboardPaste size={13} /></button>
+      </div>
+      {open && (
+        <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ position: "relative", maxWidth: 420, width: "100%", background: "linear-gradient(180deg,#F6EEDD,#E6D6B6)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 24px 60px -12px rgba(0,0,0,.7)" }}>
+            <button onClick={() => setOpen(false)} aria-label="닫기" className="press" style={{ position: "absolute", top: 12, right: 12, width: 28, height: 28, borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", cursor: "pointer" }}>✕</button>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.ink, marginBottom: 10, paddingRight: 30 }}>FEN 또는 PGN 붙여넣기</div>
+            <textarea value={text} onChange={(e) => setText(e.target.value)} rows={5} placeholder={"예: 1. e4 e5 2. Nf3 Nc6\n또는 FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"} style={{ width: "100%", fontSize: 12.5, padding: 10, borderRadius: 9, border: "1px solid #C9B58C", background: "#fff", color: T.ink, resize: "vertical", fontFamily: "ui-monospace,monospace", boxSizing: "border-box" }} />
+            {err && <div style={{ fontSize: 11.5, color: T.blunder, marginTop: 6 }}>{err}</div>}
+            <div className="flex gap-2" style={{ marginTop: 10 }}>
+              <button onClick={submit} className="press" style={{ padding: "8px 16px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", fontSize: 12.5 }}>불러오기</button>
+              <button onClick={() => setOpen(false)} className="press" style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid #C9B58C", background: "transparent", color: T.inkSoft, fontWeight: 700, cursor: "pointer", fontSize: 12.5 }}>취소</button>
+            </div>
+            <p style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>PGN 기보는 검증 후 그 수순 그대로 학습 탭에서 이어서 둘 수 있습니다. 이 앱은 시작 위치부터의 수순으로 오프닝을 다루는 구조라, FEN으로 붙여넣은 임의의 포지션은 미리보기로만 표시되고 계속 두는 용도로는 지원되지 않습니다.</p>
+          </div>
+        </div>
+      )}
+      {fenPreview && (
+        <div onClick={() => setFenPreview(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ position: "relative", background: "linear-gradient(180deg,#F6EEDD,#E6D6B6)", borderRadius: 16, padding: 20, border: "1px solid #CDB98E", boxShadow: "0 24px 60px -12px rgba(0,0,0,.7)" }}>
+            <button onClick={() => setFenPreview(null)} aria-label="닫기" className="press" style={{ position: "absolute", top: 12, right: 12, width: 28, height: 28, borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", cursor: "pointer", zIndex: 5 }}>✕</button>
+            <div style={{ fontSize: 13, fontWeight: 800, color: T.ink, marginBottom: 10, paddingRight: 30 }}>FEN 미리보기(읽기 전용)</div>
+            <Board board={fenPreview} size={320} showEval={false} interactive={false} />
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1925,6 +2012,8 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     if (focus && focus.isNew) onLearned(focus.name);   // 뒤로가기와 동일하게 새 오프닝 학습 처리를 유지한 뒤 이동
     setFocus(null); setSans(gameSans); setFuture([]); setSel(null); setLastQ(null);
   };
+  // (UI2) PGN 붙여넣기로 검증된 수순을 그대로 이어서 두도록 불러온다
+  const onLoadPgn = (movesList) => { setFocus(null); setSans(movesList); setFuture([]); setSel(null); setLastQ(null); };
 
   const node = snapNode(sans);
   const openingName = node && node.opening ? node.opening.name : null;
@@ -1948,7 +2037,10 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
         <div style={{ background: "linear-gradient(160deg,#2E1B10,#1B0F07)", borderRadius: 14, padding: 14, border: "1px solid #000", boxShadow: "inset 0 1px 0 rgba(255,255,255,.05)" }}>
           <div className="mb-3 flex items-center justify-between gap-2">
             <SequenceBar sans={sans} onJump={focus ? undefined : jumpTo} />
-            <span className="inline-flex items-center gap-1" style={{ fontSize: 10, color: liveOn ? T.brassHi : T.inkSoft, whiteSpace: "nowrap" }}>{liveOn ? <Wifi size={12} /> : <WifiOff size={12} />}{engineNote || (liveOn ? "라이브" : "스냅샷")}</span>
+            <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+              <NotationTools sans={sans} onLoadPgn={onLoadPgn} />
+              <span className="inline-flex items-center gap-1" style={{ fontSize: 10, color: liveOn ? T.brassHi : T.inkSoft, whiteSpace: "nowrap" }}>{liveOn ? <Wifi size={12} /> : <WifiOff size={12} />}{engineNote || (liveOn ? "라이브" : "스냅샷")}</span>
+            </div>
           </div>
           <div ref={boardRef} style={{ width: "100%", maxWidth: 360, margin: "0 auto", position: "relative" }}>
             <Board board={board} flip={flip} size={boardSize} arrows={arrows} legalTargets={legalTargets} selected={sel} onSquareClick={!focus ? onSquareClick : undefined} onPieceDrag={!focus ? onPieceDrag : undefined} onDrop={!focus ? onDrop : undefined} onMove={!focus ? tryMove : undefined} evalCp={posEval} interactive={!focus} lastQ={lastQ} />
