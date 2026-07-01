@@ -200,10 +200,14 @@ async function main() {
       count++;
       if (sans.length + 1 < MAX_PLY) queue.push({ sans: [...sans, mv.san], uci: [...uci, mv.uci] });
     }
-    // 메인 라인(이름 없는 최다 채택 수)
+    // 메인 라인(이름 없는 최다 채택 수) — games는 이 판정에만 내부적으로 쓰고 결과물엔 남기지 않는다.
+    // 정적 스냅샷에 실시간 표본 수치를 박아두면 시간이 지나며 실제 값과 어긋나 "인위적인 숫자"로
+    // 보이게 되므로(과거에 실제로 문제가 됨), 통계는 항상 라이브 조회로만 표시하고 스냅샷은
+    // 이름/ECO/키워드 같은 구조적 정보만 담는다.
     const mainIdx = moves.reduce((bi, m, i, a) => (m.games > (a[bi]?.games || -1) ? i : bi), 0);
     if (moves[mainIdx] && !moves[mainIdx].name) moves[mainIdx].isMain = true;
-    tree[key] = { opening: data.opening || null, moves };
+    const exportMoves = moves.map(({ adopt, games, ...rest }) => rest);
+    tree[key] = { opening: data.opening || null, moves: exportMoves };
     if (count % 20 === 0) {
       console.error("evaluated", count, "moves,", Object.keys(tree).length, "nodes");
       guardedSave({ tree, roots: ["e4", "d4"], maxPly: MAX_PLY }, { label: "중간 저장" });

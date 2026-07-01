@@ -1,0 +1,33 @@
+/* JSX 전역에서 Tailwind 스타일 className(flex, gap, items-center 등)을 쓰지만
+   Tailwind가 실제로 설치, 연결된 적이 없어 전부 무효화되어 있었음(사이트 전체 텍스트
+   간격이 좁아 보이던 원인). 실제 사용되는 className만 최소로 구현한다. */
+.flex { display: flex; }
+.inline-flex { display: inline-flex; }
+.grid { display: grid; }
+.flex-col { flex-direction: column; }
+.flex-wrap { flex-wrap: wrap; }
+.items-center { align-items: center; }
+.items-start { align-items: flex-start; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.justify-end { justify-content: flex-end; }
+.gap-1 { gap: 0.25rem; }
+.gap-2 { gap: 0.5rem; }
+.gap-3 { gap: 0.75rem; }
+.gap-5 { gap: 1.25rem; }
+.mb-3 { margin-bottom: 0.75rem; }
+.mx-auto { margin-left: auto; margin-right: auto; }
+.max-w-xl { max-width: 36rem; }
+.select-none { user-select: none; }
+.text-left { text-align: left; }
+
+.press { cursor: pointer; transition: transform .1s ease, opacity .1s ease; }
+.press:active { transform: scale(0.96); opacity: 0.88; }
+
+@media (min-width: 640px) {
+  .sm\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1024px) {
+  .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lg\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
