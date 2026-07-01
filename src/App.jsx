@@ -46,7 +46,9 @@ const ENGINE_URLS = [
   ENGINE_BASE + "engine/stockfish-nnue-16-single.js",
   "https://cdn.jsdelivr.net/npm/stockfish@16.0.0/src/stockfish-nnue-16-single.js",
 ];
-const LICHESS_API = "https://explorer.lichess.org/lichess";
+// Lichess Explorer가 로그인(OAuth 토큰)을 요구하므로, 토큰을 서버에만 보관하는
+// /api/lichess 프록시(Vercel 서버리스 함수, api/lichess.js)를 거쳐 호출한다.
+const LICHESS_API = "/api/lichess";
 const WIKI_API = "https://en.wikipedia.org/api/rest_v1/page/summary/";
 
 /* ===== Supabase 백엔드 (선택) — Vite 환경변수로 주입, 미설정 시 자동으로 localStorage 폴백 =====
@@ -286,7 +288,7 @@ function lichessSinceParam(monthsBack) {
 async function fetchLichess(sans, master) {
   const uci = sansToUci(sans).join(",");
   const url = master
-    ? "https://explorer.lichess.org/masters?play=" + uci + "&moves=14&topGames=0"
+    ? LICHESS_API + "?master=1&play=" + uci + "&moves=14&topGames=0"
     : LICHESS_API + "?play=" + uci + "&moves=20&topGames=0&recentGames=0&speeds=bullet,blitz,rapid,classical&ratings=1000,1200,1400,1600,1800,2000,2200,2500&since=" + lichessSinceParam(LICHESS_STATS_WINDOW_MONTHS);
   const hit = _lichessCache.get(url);
   if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.data; // 10분 캐시(되돌리기·재방문 시 재요청·레이트리밋 방지)

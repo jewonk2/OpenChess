@@ -32,16 +32,29 @@ Node 18 이상 필요. 단일 스레드 엔진이라 COOP/COEP 헤더가 필요 
 ### C. Netlify / Cloudflare Pages
 Build command `npm run build`, Publish directory `dist`. 나머지는 Vercel 과 동일.
 
+## Lichess Opening Explorer 인증 (필수)
+
+Lichess가 Opening Explorer API를 로그인 계정 전용으로 바꿔서, 토큰 없이는 호출이 401로 막힙니다.
+
+1. Lichess 계정으로 로그인한 상태에서 `https://lichess.org/account/oauth/token/create` 접속
+2. 설명은 아무거나 입력, 권한(Scope)은 체크 안 해도 됨(공개 읽기 전용 데이터라 무권한 토큰으로 충분) → Create
+3. 발급된 토큰(`lip_...`)을 아래 두 곳에 설정:
+   - **로컬(`npm run refresh`용)**: `$env:LICHESS_TOKEN = "lip_..."` (PowerShell) 또는 `export LICHESS_TOKEN=lip_...` (bash) 후 같은 세션에서 `npm run refresh` 실행
+   - **Vercel(배포된 사이트용)**: Project → Settings → Environment Variables 에 `LICHESS_TOKEN` 추가(값은 토큰) 후 재배포. **`VITE_` 접두사를 붙이면 안 됩니다** — 그러면 브라우저 번들에 토큰이 그대로 노출됩니다. 이 이름 그대로 서버 전용 환경변수로 둬야 `api/lichess.js`(서버리스 함수)에서만 읽습니다.
+
+브라우저는 Lichess를 직접 호출하지 않고 `/api/lichess`(Vercel 서버리스 함수)를 거쳐 호출합니다 — 토큰이 클라이언트에 노출되지 않도록 서버 쪽에서만 붙입니다.
+
 ## 데이터 갱신 (선택)
 
 ```bash
-npm run refresh   # Lichess Explorer + Stockfish 로 openings.json 재생성
+npm run refresh   # Lichess Explorer + Stockfish 로 openings.json 재생성 (LICHESS_TOKEN 필요)
 ```
 
 ## 구조
 
 - `src/App.jsx` — 앱 전체 (단일 파일)
 - `src/data/openings.json` — ECO 오프닝 트리 스냅샷 (최대 10수)
+- `api/lichess.js` — Lichess Explorer 프록시(Vercel 서버리스 함수). 토큰을 서버에서만 붙여 브라우저에 노출하지 않음
 - `scripts/copy-engine.mjs` — 엔진 파일을 public/engine 으로 복사 (postinstall)
 - `scripts/refresh-data.mjs` — 라이브 데이터로 스냅샷 재생성
 

@@ -119,12 +119,17 @@ function makeEngine() {
 
 /* ---- Lichess Explorer ---- */
 const cache = new Map();
+// Lichess Explorer가 로그인(OAuth 토큰)을 요구함 — https://lichess.org/account/oauth/token/create
+// 에서 토큰을 발급받아 LICHESS_TOKEN 환경변수로 넘기면 인증 헤더를 붙여 호출한다.
+const EXPLORER_HEADERS = { "User-Agent": "opening-trainer/1.0" };
+if (process.env.LICHESS_TOKEN) EXPLORER_HEADERS.Authorization = "Bearer " + process.env.LICHESS_TOKEN;
+
 async function explorer(uciList) {
   const play = uciList.join(",");
   if (cache.has(play)) return cache.get(play);
   const url = `${LICHESS}?play=${play}&moves=12&topGames=0&recentGames=0&speeds=${SPEEDS}&ratings=${RATINGS}&since=${SINCE}`;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const res = await fetch(url, { headers: { "User-Agent": "opening-trainer/1.0" } });
+    const res = await fetch(url, { headers: EXPLORER_HEADERS });
     if (res.status === 429) { await sleep(60000); continue; }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
