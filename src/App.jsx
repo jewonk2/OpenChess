@@ -2773,6 +2773,10 @@ const TABS = [{ key: "learn", label: "학습", Icon: GraduationCap }, { key: "de
 
 /* ============================================================ 계정 (회원가입/로그인) ============================================================ */
 const ALNUM = /^[A-Za-z0-9]+$/;
+// (UX7) 로컬 캐시를 계정(uid) 단위로 분리 — 이걸 안 하면 같은 기기에서 다른 계정으로 로그인할 때
+// 퍼즐·프로필·칭호·chess.com 연동 등이 이전 계정 것을 그대로 물려받는 사고가 남(실제로 있었음).
+// 로그인 안 한 상태(게스트)는 별도로 "guest" 버킷에 담아 계정 데이터와 절대 섞이지 않게 한다.
+function localKeyFor(uidVal) { return "chess_state_v5:" + (uidVal || "guest"); }
 /* ---- Supabase Auth (이메일+비번, GoTrue REST 직접 호출). 세션은 refresh_token 만 영속화 ---- */
 const SESS_KEY = "occ_sess";
 function saveRefresh(t) { try { if (t) window.localStorage.setItem(SESS_KEY, t); else window.localStorage.removeItem(SESS_KEY); } catch { } }
@@ -3403,15 +3407,20 @@ export default function App() {
     const _rec = parseRecoveryHash(); if (_rec) setRecovery(_rec);
     const _oauth = _rec ? null : parseOAuthHash();
     if (!_rec && !_oauth) { const _oerr = parseOAuthError(); if (_oerr) { setAuthNotice("Google 로그인을 완료하지 못했어요. 이미 다른 방식으로 가입된 이메일일 수 있습니다."); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } } }
-    const raw = await store.get("chess_state_v5");
+    // (UX7) 세션 복구를 먼저 시도해 uid를 확정한 뒤, 그 uid(없으면 guest) 전용 로컬 캐시만 읽는다 —
+    // 순서를 바꾸지 않으면 이전에 이 기기에서 로그인했던 "다른" 계정의 로컬 캐시를 먼저 읽어버린다.
+    let acc = null;
+    try { if (!_rec && !_oauth) acc = await authRestore(); } catch { }
+    const activeUid = acc ? acc.uid : null;
+    const raw = await store.get(localKeyFor(activeUid));
     if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra); } catch { } }
-    try { if (!_rec && !_oauth) { const acc = await authRestore(); if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); } } } catch { }
-    if (_oauth) { try { const acc = await authFromHash(_oauth); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } if (acc) { if (acc.username) onAuth(acc); else setNeedUser(acc); } } catch { } }
+    if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); }
+    if (_oauth) { try { const oa = await authFromHash(_oauth); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } if (oa) { if (oa.username) onAuth(oa); else setNeedUser(oa); } } catch { } }
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
   useEffect(() => { if (loaded && uid && user) publishProfile(uid, user, { nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "" }); }, [loaded, uid, user, profile.nickname, profile.photo, profile.chesscom, currentTitle]);
-  useEffect(() => { if (loaded) store.set("chess_state_v5", JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra]);
+  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid]);
   useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
   // (기능4) 해결 횟수로부터 새 칭호 획득 → 영구 저장 + 획득 알림(장착 버튼)
   const titleCounts = useMemo(() => familyCounts(puzzles, solved), [puzzles, solved]);
@@ -3427,7 +3436,25 @@ export default function App() {
   const equipTitle = useCallback((id) => { setCurrentTitle(id); setToast((t) => (t && t.type === "title" ? null : t)); }, []);
 
   const onAuth = useCallback((acc) => { if (!acc) return; setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); setAuthOpen(false); }, []);
-  const logout = useCallback(() => { authLogout(); setUser(null); setUid(null); setDevOn(false); setConfirmLogout(false); }, []);
+  // (UX7) 로그아웃 시 메모리에 남아있던 이전 계정 데이터를 완전히 비운다 — 그대로 두면 로그아웃 화면에서도
+  // 잠깐 보이거나, 다음 로그인이 서버에서 못 채운 필드에 이전 계정 값이 남는 사고로 이어질 수 있음.
+  const logout = useCallback(() => {
+    authLogout();
+    setUser(null); setUid(null); setDevOn(false); setConfirmLogout(false);
+    setUnlocked(new Set()); setPuzzles([]); setSolved(new Set()); setDeletedPuzzles(new Set());
+    setEarnedTitles(new Set()); setCurrentTitle(null); setProfile({ nickname: "", chesscom: "" });
+    setLearnSans([]); setLearnExtra({});
+  }, []);
+  // (UX7) 일정 시간 활동이 없으면 자동 로그아웃 — 로그인 상태가 무기한 유지되던 보안 문제 수정
+  useEffect(() => {
+    if (!user) return;
+    const IDLE_LIMIT_MS = 30 * 60 * 1000; // 30분
+    let timer = setTimeout(logout, IDLE_LIMIT_MS);
+    const reset = () => { clearTimeout(timer); timer = setTimeout(logout, IDLE_LIMIT_MS); };
+    const events = ["mousedown", "keydown", "touchstart", "scroll"];
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    return () => { clearTimeout(timer); events.forEach((e) => window.removeEventListener(e, reset)); };
+  }, [user, logout]);
   const unlockOpening = useCallback((keyStr) => { let isNew = false; setUnlocked((p) => { if (p.has(keyStr)) return p; isNew = true; const n = new Set(p); const parts = keyStr.split(" ").filter(Boolean); for (let i = 1; i <= parts.length; i++) n.add(parts.slice(0, i).join(" ")); return n; }); if (isNew) setNewUnlocks((n) => n + 1); return isNew; }, []);
   const onLearned = useCallback((name) => { setToast({ name }); setTimeout(() => setToast(null), 2600); }, []);
   const onSavePuzzle = useCallback((pz) => { if (deletedPuzzles.has(pz.id) && !solved.has(pz.id)) return; if (!isPuzzleSequenceValid(pz)) { console.warn("퍼즐 저장 거부(불법 수순):", pz.id); return; } setPuzzles((prev) => { if (prev.some((x) => x.id === pz.id)) return prev; puzzleShare(pz); return [...prev, pz]; }); }, [deletedPuzzles, solved]);
