@@ -37,20 +37,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // src/App.jsx 에 인라인된 "const SNAP = ...DATA 마커... {...};" 블록을 최신 데이터로 교체.
 // 앱은 src/data/openings.json 을 런타임에 읽지 않고 이 인라인 블록만 사용하므로,
 // 이 동기화가 없으면 refresh 를 아무리 돌려도 화면에는 절대 반영되지 않는다(과거 버그의 원인).
+// Windows 체크아웃 시 CRLF로 바뀌어도(core.autocrlf) 안전하게 파싱되도록 \r\n/\n 모두 처리.
 function readAppSnap() {
   const src = readFileSync("src/App.jsx", "utf8");
-  const lines = src.split("\n");
+  const lines = src.split(/\r?\n/);
   const idx = lines.findIndex((l) => l.startsWith("const SNAP = "));
-  if (idx === -1) return null;
+  if (idx === -1) return { error: "src/App.jsx 에서 'const SNAP = ' 라인을 찾지 못함" };
   const marker = "/*__DATA__*/ ";
   const mi = lines[idx].indexOf(marker);
-  if (mi === -1) return null;
-  try { return JSON.parse(lines[idx].slice(mi + marker.length, -1)); } catch { return null; }
+  if (mi === -1) return { error: "/*__DATA__*/ 마커를 찾지 못함" };
+  const jsonPart = lines[idx].slice(mi + marker.length).trimEnd().replace(/;$/, "");
+  try { return { data: JSON.parse(jsonPart) }; } catch (e) { return { error: "SNAP JSON 파싱 실패: " + e.message }; }
 }
 function injectIntoApp(data) {
   const appPath = "src/App.jsx";
   const src = readFileSync(appPath, "utf8");
-  const lines = src.split("\n");
+  const lines = src.split(/\r?\n/);
   const idx = lines.findIndex((l) => l.startsWith("const SNAP = "));
   if (idx === -1) { console.error("경고: src/App.jsx 에서 'const SNAP = ' 라인을 찾지 못해 인라인 동기화를 건너뜀"); return; }
   const marker = "/*__DATA__*/ ";
@@ -62,18 +64,28 @@ function injectIntoApp(data) {
 }
 // 안전장치: Lichess 조회가 (레이트리밋·인증 오류 등으로) 대부분/전부 실패하면 tree 가 텅 비거나
 // 기존보다 훨씬 작아진다. 이 경우 절대 기존 정상 데이터를 덮어쓰지 않는다(과거 데이터 유실 사고 재발 방지).
-// FORCE=1 로 강제 저장 가능.
+// 기존 스냅샷을 아예 읽지/파싱하지 못하는 경우도 "안전 비교 불가"로 보고 똑같이 저장을 막는다
+// (silent fail-open으로 안전장치가 무력화됐던 사고 재발 방지). FORCE=1 로 강제 저장 가능.
 function guardedSave(snapshot, { label }) {
   const newCount = Object.keys(snapshot.tree).length;
-  const baseline = (readAppSnap() || {}).tree || {};
-  const baselineCount = Object.keys(baseline).length;
-  if (!process.env.FORCE && baselineCount > 0 && newCount < baselineCount * 0.5) {
-    console.error(
-      `중단(${label}): 새 데이터가 ${newCount}개 노드로, 기존 ${baselineCount}개보다 너무 작습니다. ` +
-      `Lichess 조회가 대부분 실패했을 가능성이 큽니다 — 기존 데이터를 보호하기 위해 저장을 건너뜁니다. ` +
-      `정말로 이 결과로 덮어쓰려면 FORCE=1 환경변수를 설정하고 다시 실행하세요.`
-    );
-    return false;
+  if (!process.env.FORCE) {
+    const baseline = readAppSnap();
+    if (baseline.error) {
+      console.error(
+        `중단(${label}): 기존 src/App.jsx 스냅샷을 읽지 못해 안전 비교를 할 수 없습니다 (${baseline.error}). ` +
+        `데이터 유실을 막기 위해 저장을 건너뜁니다. 정말로 이 결과로 덮어쓰려면 FORCE=1 환경변수를 설정하고 다시 실행하세요.`
+      );
+      return false;
+    }
+    const baselineCount = Object.keys(baseline.data.tree || {}).length;
+    if (baselineCount > 0 && newCount < baselineCount * 0.5) {
+      console.error(
+        `중단(${label}): 새 데이터가 ${newCount}개 노드로, 기존 ${baselineCount}개보다 너무 작습니다. ` +
+        `Lichess 조회가 대부분 실패했을 가능성이 큽니다 — 기존 데이터를 보호하기 위해 저장을 건너뜁니다. ` +
+        `정말로 이 결과로 덮어쓰려면 FORCE=1 환경변수를 설정하고 다시 실행하세요.`
+      );
+      return false;
+    }
   }
   writeFileSync("src/data/openings.json", JSON.stringify(snapshot));
   injectIntoApp(snapshot);
