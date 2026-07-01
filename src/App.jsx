@@ -2408,106 +2408,141 @@ function ProfileEditor({ profile, setProfile, earnedTitles, currentTitle, onEqui
     </div>
   );
 }
-// (기능6) 이론 수 체계 추가 — 모식도(세로=갈래, 가로=깊이). 이론 수만 추가(엔진 평가 왜곡 방지), 수마다 이름 입력(기존 이름 기본값).
-function SchematicEditor({ bumpContent }) {
-  const [rows, setRows] = useState([[{ san: "", name: "" }]]);
-  const [msg, setMsg] = useState("");
-  const existingName = (path, san) => {
+// (UI7) 이론 트리의 특정 위치에서 실제로 "이론 수"로 표시되는 자식 수 목록(가지치기 없이 스냅샷+추가분 통합).
+function theoryChildren(path) {
+  const key = path.join(" ");
+  const node = snapNode(path);
+  const seen = new Set();
+  const out = [];
+  const consider = (san, nm) => {
+    if (isUnbooked(key, san)) return;
+    const k = stripSuffix(san);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ san, name: nameOverride(key, san) ?? nm ?? "" });
+  };
+  if (node) for (const m of node.moves) { const forced = forceKindFor(key, m.san); if (forced === "book" || (m.book && forced == null)) consider(m.san, m.name); }
+  for (const a of addsFor(key)) { const forced = forceKindFor(key, a.san); if (a.theory || forced === "book") consider(a.san, a.name); }
+  return out;
+}
+// (UI7) BFS로 트리 구성 — 이미 이론에 있는 하위 수는 자동으로 가지에 포함(재입력 불필요), 개수/깊이는 상한을 둬 렌더 성능을 보호.
+function buildSchematicTree(focusPath, maxNodes, maxDepth) {
+  const root = { path: focusPath, san: focusPath[focusPath.length - 1] || null, name: focusPath.length ? (nameOverride(focusPath.slice(0, -1).join(" "), focusPath[focusPath.length - 1]) ?? "") : "", children: [], depth: 0 };
+  let count = 1;
+  const queue = [root];
+  while (queue.length) {
+    const n = queue.shift();
+    if (n.depth >= maxDepth || count >= maxNodes) continue;
+    for (const k of theoryChildren(n.path)) {
+      if (count >= maxNodes) break;
+      const child = { path: [...n.path, k.san], san: k.san, name: k.name, children: [], depth: n.depth + 1 };
+      n.children.push(child); count++; queue.push(child);
+    }
+  }
+  return { root, truncated: count >= maxNodes };
+}
+// (UI7) 타이디 트리 레이아웃 — depth=가로(x), 형제 순서=세로(y). 공유 부모는 한 번만 그려지고 새 가지는 오른쪽으로 가로 확장.
+function layoutSchematicTree(root) {
+  let cursor = 0;
+  const nodes = [];
+  const edges = [];
+  const visit = (node) => {
+    if (!node.children.length) { node.y = cursor++; }
+    else {
+      for (const c of node.children) visit(c);
+      node.y = (node.children[0].y + node.children[node.children.length - 1].y) / 2;
+    }
+    node.x = node.depth;
+    nodes.push(node);
+    for (const c of node.children) edges.push([node, c]);
+  };
+  visit(root);
+  return { nodes, edges };
+}
+// (기능6/UI7) 이론 수 체계 추가 — 실제 이론 트리를 가로 분기 다이어그램으로 렌더링, 드래그로 패닝, 노드 클릭으로 하위 수 추가.
+function SchematicEditor({ bumpContent, contentVer, canAdd, focusPath, setFocusPath }) {
+  const [pan, setPan] = useState({ x: 24, y: 200 });
+  const [addAt, setAddAt] = useState(null); // path(array)|null — 어느 노드에 자식 추가 폼이 열려있는지
+  const [sanIn, setSanIn] = useState(""); const [nameIn, setNameIn] = useState(""); const [err, setErr] = useState("");
+  const dragRef = useRef(null);
+  const colW = 148, rowH = 42, boxW = 108, boxH = 30;
+  const { nodes, edges, truncated } = useMemo(() => {
+    const { root, truncated } = buildSchematicTree(focusPath, 320, 8);
+    const { nodes, edges } = layoutSchematicTree(root);
+    return { nodes, edges, truncated };
+  }, [focusPath.join(" "), contentVer]);
+  useEffect(() => { const root = nodes[nodes.length - 1]; setPan({ x: 24, y: 195 - (root ? root.y * rowH : 0) }); setAddAt(null); }, [focusPath.join(" ")]);
+  const width = Math.max(600, (Math.max(...nodes.map((n) => n.x)) + 2) * colW);
+  const height = Math.max(320, (Math.max(...nodes.map((n) => n.y)) + 2) * rowH);
+  const onPointerDown = (e) => { dragRef.current = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y }; e.currentTarget.setPointerCapture(e.pointerId); };
+  const onPointerMove = (e) => { if (!dragRef.current) return; setPan({ x: dragRef.current.px + (e.clientX - dragRef.current.sx), y: dragRef.current.py + (e.clientY - dragRef.current.sy) }); };
+  const onPointerUp = () => { dragRef.current = null; };
+  const openAdd = (path) => { setAddAt(path); setSanIn(""); setNameIn(""); setErr(""); };
+  const submitAdd = async () => {
+    const san = sanIn.trim(); if (!san) return;
+    const path = addAt; const board = boardFromSans(path); const color = path.length % 2 === 0 ? "w" : "b";
+    if (!sanSrc(board, san, color)) { setErr("불법 수입니다."); return; }
     const key = path.join(" ");
-    const ov = nameOverride(key, san); if (ov != null) return ov;
-    const nd = snapNode(path); const mm = nd && nd.moves.find((x) => stripSuffix(x.san) === stripSuffix(san));
-    return mm && mm.name ? mm.name : "";
+    if (!CONTENT.treeAdds[key]) CONTENT.treeAdds[key] = [];
+    const existing = CONTENT.treeAdds[key].find((x) => x.san === san);
+    if (existing) existing.theory = true; else CONTENT.treeAdds[key].push({ san, theory: true });
+    CONTENT.forceKind[key + "|" + san] = "book";
+    const nm = nameIn.trim(); if (nm) CONTENT.names[key + "|" + stripSuffix(san)] = nm;
+    await bumpContent();
+    setAddAt(null);
   };
-  const rowInfo = (row) => { // 각 셀 적법성 + prefix
-    let path = []; const info = [];
-    for (const c of row) {
-      const san = (c.san || "").trim(); if (!san) { info.push({ empty: true }); continue; }
-      const board = boardFromSans(path); const color = path.length % 2 === 0 ? "w" : "b";
-      const ok = !!sanSrc(board, san, color);
-      info.push({ san, ok, ply: path.length, existing: ok ? existingName(path, san) : "" });
-      if (!ok) break; path = [...path, san];
-    }
-    return info;
-  };
-  const setCell = (ri, ci, patch) => setRows((rs) => rs.map((r, i) => i !== ri ? r : r.map((c, j) => j !== ci ? c : { ...c, ...patch })));
-  const onSan = (ri, ci, val) => setRows((rs) => rs.map((r, i) => {
-    if (i !== ri) return r;
-    return r.map((c, j) => {
-      if (j !== ci) return c;
-      let path = []; for (let k = 0; k < ci; k++) { const s = (r[k].san || "").trim(); if (!s) break; path.push(s); }
-      const ex = val.trim() ? existingName(path, val.trim()) : "";
-      return { ...c, san: val, name: (!c.name && ex) ? ex : c.name }; // 기존 이름 기본값
-    });
-  }));
-  const addDepth = (ri) => setRows((rs) => rs.map((r, i) => i !== ri ? r : [...r, { san: "", name: "" }]));
-  const addBranchFrom = (ri) => setRows((rs) => {   // (UI5) 마지막 수에서 분기 — prefix 공유 + 마지막 자리 빈칸
-    const row = rs[ri]; let last = -1;
-    for (let i = 0; i < row.length; i++) if ((row[i].san || "").trim()) last = i;
-    if (last < 0) return rs;
-    const newRow = [...row.slice(0, last).map((c) => ({ ...c })), { san: "", name: "" }];
-    return [...rs.slice(0, ri + 1), newRow, ...rs.slice(ri + 1)];
-  });
-  const delRow = (ri) => setRows((rs) => rs.length > 1 ? rs.filter((_, i) => i !== ri) : rs);
-  const sharedLen = (a, b) => { let n = 0; while (n < a.length && n < b.length && (a[n].san || "").trim() && (a[n].san || "").trim() === (b[n].san || "").trim()) n++; return n; };
-  const save = async () => {
-    let added = 0, bad = null;
-    for (const row of rows) {
-      let path = [];
-      for (const c of row) {
-        const san = (c.san || "").trim(); if (!san) break;
-        const board = boardFromSans(path); const color = path.length % 2 === 0 ? "w" : "b";
-        if (!sanSrc(board, san, color)) { bad = san; break; }
-        const key = path.join(" ");
-        if (!CONTENT.treeAdds[key]) CONTENT.treeAdds[key] = [];
-        if (!CONTENT.treeAdds[key].some((x) => x.san === san)) CONTENT.treeAdds[key].push({ san });
-        CONTENT.forceKind[key + "|" + san] = "book"; // 이론 수만
-        const nm = (c.name || "").trim(); if (nm) CONTENT.names[key + "|" + stripSuffix(san)] = nm;
-        path = [...path, san]; added++;
-      }
-      if (bad) break;
-    }
-    if (added > 0) await bumpContent();
-    setMsg(bad ? ("불법 수 " + bad + " 에서 중단 — " + added + "수까지 추가됨") : (added > 0 ? added + "개 수를 이론 트리에 추가했습니다." : "입력된 수가 없습니다."));
-  };
-  const cellInput = { width: 74, padding: "6px 7px", borderRadius: 7, border: "1px solid #C9B58C", background: "#fff", color: T.ink, fontSize: 12.5, fontFamily: "ui-monospace,monospace", boxSizing: "border-box" };
-  const nameInput = { width: 120, padding: "5px 7px", borderRadius: 7, border: "1px solid #DCCBA8", background: "#FBF5E8", color: T.ink, fontSize: 11, boxSizing: "border-box" };
   return (
     <div>
-      <p style={{ fontSize: 11.5, color: T.inkSoft, margin: "0 0 10px", lineHeight: 1.55 }}>가로(→)는 다음 수, "갈래"는 마지막 수에서 분기합니다(윗줄과 공유하는 수는 흐리게 = 트리 줄기). 각 수에 이름을 붙일 수 있고, 이미 이론에 있는 수는 현재 이름이 기본값으로 채워집니다. 추가되는 수는 모두 이론 수로만 등록됩니다.</p>
-      <div style={{ overflowX: "auto" }}>
-        {rows.map((row, ri) => {
-          const info = rowInfo(row);
-          const shared = ri > 0 ? sharedLen(rows[ri - 1], row) : 0;   // 윗줄과 공유 prefix → 트리 줄기
-          return (
-            <div key={ri} className="flex items-center" style={{ marginBottom: 10, minWidth: "min-content" }}>
-              {row.map((c, ci) => {
-                const inf = info[ci] || {};
-                const bad = c.san.trim() && inf.ok === false;
-                const inherited = ci < shared;
-                return (
-                  <div key={ci} className="flex items-center" style={{ flexShrink: 0 }}>
-                    {ci > 0 && <div style={{ width: 14, height: 2, background: T.brass, opacity: inherited ? 0.35 : 0.85, flexShrink: 0 }} />}
-                    <div style={{ opacity: inherited ? 0.45 : 1 }}>
-                      <div style={{ fontSize: 9.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginBottom: 2 }}>{moveNumber(ci)}</div>
-                      <input value={c.san} onChange={(e) => onSan(ri, ci, e.target.value)} placeholder="수" style={{ ...cellInput, borderColor: bad ? T.blunder : "#C9B58C" }} />
-                      <input value={c.name} onChange={(e) => setCell(ri, ci, { name: e.target.value })} placeholder={inf.existing || "이름"} title={c.name || inf.existing || ""} style={{ ...nameInput, marginTop: 4 }} />
-                    </div>
-                  </div>
-                );
-              })}
-              <div className="flex items-center" style={{ gap: 4, paddingLeft: 10 }}>
-                <button onClick={() => addDepth(ri)} className="press" title="다음 수" style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid " + T.brass, background: "transparent", color: T.brassHi, fontSize: 16, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>→</button>
-                <button onClick={() => addBranchFrom(ri)} className="press" title="갈래(마지막 수에서 분기)" style={{ height: 28, padding: "0 9px", borderRadius: 7, border: "1px dashed " + T.brass, background: "transparent", color: T.brassHi, fontSize: 11, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>갈래</button>
-                {rows.length > 1 && <button onClick={() => delRow(ri)} className="press" title="갈래 삭제" style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid " + T.blunder, background: "transparent", color: T.blunder, fontSize: 13, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>✕</button>}
+      <p style={{ fontSize: 11.5, color: T.inkSoft, margin: "0 0 10px", lineHeight: 1.55 }}>실제 이론 트리입니다. 이미 이론에 있는 하위 수는 자동으로 가지에 표시되며, 공유하는 앞수는 한 번만 그려지고 새 가지는 그 지점에서 가로로 뻗어나갑니다. 캔버스를 드래그해 이동할 수 있습니다. 수를 클릭하면 그 위치로 이동(더 깊이 탐색)하고, <b>+</b> 버튼으로 그 지점에 새 이론 수를 추가합니다.</p>
+      <div className="flex items-center gap-2" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+        <button onClick={() => setFocusPath([])} className="press" style={{ fontSize: 11, fontWeight: 800, padding: "3px 9px", borderRadius: 7, border: "1px solid " + T.brass, background: focusPath.length ? "transparent" : T.brass, color: focusPath.length ? T.brassHi : "#241509", cursor: "pointer" }}>시작 위치</button>
+        {focusPath.map((s, i) => (
+          <span key={i} className="flex items-center gap-2">
+            <Crumb size={12} style={{ color: T.inkSoft }} />
+            <button onClick={() => setFocusPath(focusPath.slice(0, i + 1))} className="press" style={{ fontSize: 11, fontFamily: "ui-monospace,monospace", fontWeight: 800, padding: "3px 9px", borderRadius: 7, border: "1px solid #DCCBA8", background: i === focusPath.length - 1 ? T.brass : "transparent", color: i === focusPath.length - 1 ? "#241509" : T.ink, cursor: "pointer" }}>{moveNumber(i)}{s}</button>
+          </span>
+        ))}
+      </div>
+      <div
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp} onPointerCancel={onPointerUp}
+        style={{ position: "relative", overflow: "hidden", height: 420, borderRadius: 10, border: "1px solid #DCCBA8", background: "#FBF5E8", touchAction: "none", cursor: dragRef.current ? "grabbing" : "grab" }}
+      >
+        <div style={{ position: "absolute", left: pan.x, top: pan.y, width, height }}>
+          <svg width={width} height={height} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", overflow: "visible" }}>
+            {edges.map(([p, c], i) => {
+              const x1 = p.x * colW + boxW, y1 = p.y * rowH + boxH / 2, x2 = c.x * colW, y2 = c.y * rowH + boxH / 2;
+              const mx = (x1 + x2) / 2;
+              return <path key={i} d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`} stroke={T.brass} strokeWidth={1.6} fill="none" opacity={0.7} />;
+            })}
+          </svg>
+          {nodes.map((n, i) => {
+            const isRoot = n.depth === 0;
+            const label = isRoot ? (n.san ? n.san : "시작") : n.san;
+            return (
+              <div key={i} style={{ position: "absolute", left: n.x * colW, top: n.y * rowH, width: boxW }}>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setFocusPath(n.path)} className="press" title={n.name || label} style={{ flex: 1, minWidth: 0, height: boxH, padding: "0 8px", borderRadius: 7, border: "1px solid " + (isRoot ? T.brass : "#C9B58C"), background: isRoot ? T.brass : "#fff", color: isRoot ? "#241509" : T.ink, fontFamily: "ui-monospace,monospace", fontSize: 12, fontWeight: 800, cursor: "pointer", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</button>
+                  {canAdd && <button onClick={() => openAdd(n.path)} className="press" title="이 위치에 이론 수 추가" style={{ width: boxH, height: boxH, flexShrink: 0, borderRadius: 7, border: "1px dashed " + T.brass, background: "transparent", color: T.brassHi, fontSize: 15, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>+</button>}
+                </div>
+                {n.name && <div style={{ fontSize: 9.5, color: T.inkSoft, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.name}</div>}
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+        {truncated && <div style={{ position: "absolute", right: 8, bottom: 8, fontSize: 10.5, color: T.inkSoft, background: "rgba(255,255,255,.85)", padding: "2px 7px", borderRadius: 6 }}>일부만 표시됨 — 수를 클릭해 더 깊이 탐색하세요</div>}
       </div>
-      <div className="flex items-center gap-2" style={{ marginTop: 4 }}>
-        <button onClick={save} className="press" style={{ padding: "8px 16px", borderRadius: 9, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", fontSize: 12 }}>이론 트리에 추가</button>
-        {msg && <span style={{ fontSize: 11.5, color: T.inkSoft }}>{msg}</span>}
-      </div>
+      {addAt && (
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 9, border: "1px solid " + T.brass, background: "#fff" }}>
+          <div style={{ fontSize: 11.5, color: T.inkSoft, marginBottom: 6 }}>{addAt.join(" ") || "시작 위치"} 다음에 이론 수 추가</div>
+          <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+            <input value={sanIn} onChange={(e) => setSanIn(e.target.value)} placeholder="수 (예: Nf3)" style={{ width: 90, padding: "6px 8px", borderRadius: 7, border: "1px solid " + (err ? T.blunder : "#C9B58C"), fontFamily: "ui-monospace,monospace", fontSize: 12.5 }} />
+            <input value={nameIn} onChange={(e) => setNameIn(e.target.value)} placeholder="이름(선택)" style={{ width: 160, padding: "6px 8px", borderRadius: 7, border: "1px solid #DCCBA8", fontSize: 12 }} />
+            <button onClick={submitAdd} className="press" style={{ padding: "7px 14px", borderRadius: 8, background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, fontWeight: 800, border: "none", cursor: "pointer", fontSize: 12 }}>추가</button>
+            <button onClick={() => setAddAt(null)} className="press" style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid #C9B58C", background: "transparent", color: T.inkSoft, fontWeight: 700, cursor: "pointer", fontSize: 12 }}>취소</button>
+          </div>
+          {err && <div style={{ fontSize: 11, color: T.blunder, marginTop: 6 }}>{err}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -2610,7 +2645,7 @@ function AccountChessStats({ chesscom, username, onOpenOpening }) {
     </div>
   );
 }
-function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, chesscom, user, isDev, isCodev, devOn, setDevOn, codevOn, setCodevOn, canManageCodev, canAdd, canEdit, bumpContent, contentVer, openAuth, earnedTitles, currentTitle, onEquipTitle, onOpenOpening }) {
+function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, chesscomStatus, chesscom, user, isDev, isCodev, devOn, setDevOn, codevOn, setCodevOn, canManageCodev, canAdd, canEdit, bumpContent, contentVer, openAuth, earnedTitles, currentTitle, onEquipTitle, onOpenOpening, treeFocus, setTreeFocus }) {
   const [cc, setCc] = useState(profile.chesscom || "");
   const [codevId, setCodevId] = useState("");
   const [codevErr, setCodevErr] = useState("");
@@ -2682,7 +2717,7 @@ function SettingsTab({ profile, setProfile, engineStatus, liveOn, setLiveOn, che
       {canAdd && (
         <div style={card}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>이론 수 체계 추가</div>
-          <SchematicEditor bumpContent={bumpContent} />
+          <SchematicEditor bumpContent={bumpContent} contentVer={contentVer} canAdd={canAdd} focusPath={treeFocus} setFocusPath={setTreeFocus} />
         </div>
       )}
 
@@ -3360,6 +3395,7 @@ export default function App() {
   const [puzzles, setPuzzles] = useState([]);
   const [learnFocus, setLearnFocus] = useState(null);   // (UX4) 탭 이동에도 집중 학습 유지
   const [puzzleActive, setPuzzleActive] = useState(null);   // (UX4) 탭 이동에도 퍼즐 창 유지
+  const [treeFocus, setTreeFocus] = useState([]);   // (UX4) 새로고침해도 이론 트리 에디터의 탐색 위치 유지
   const [deletedPuzzles, setDeletedPuzzles] = useState(new Set()); // (UX5) 삭제한 퍼즐(자동 재생성 방지)
   const [solveCounts, setSolveCounts] = useState({});              // (UX6) 번호별 전역 풀이수
   const [earnedTitles, setEarnedTitles] = useState(new Set());     // (기능4) 획득 칭호(영구)
@@ -3425,7 +3461,7 @@ export default function App() {
     const raw = await store.get(localKeyFor(activeUid));
     if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra);
       // (UX1) 새로고침해도 현재 탭·집중 학습·퍼즐 진행 상황이 유지되도록 복원
-      if (d.tab) setTab(d.tab); if (Array.isArray(d.learnFuture)) setLearnFuture(d.learnFuture); if (d.learnFocus) setLearnFocus(d.learnFocus); if (d.puzzleActive) setPuzzleActive(d.puzzleActive);
+      if (d.tab) setTab(d.tab); if (Array.isArray(d.learnFuture)) setLearnFuture(d.learnFuture); if (d.learnFocus) setLearnFocus(d.learnFocus); if (d.puzzleActive) setPuzzleActive(d.puzzleActive); if (Array.isArray(d.treeFocus)) setTreeFocus(d.treeFocus);
     } catch { } }
     if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); }
     if (_oauth) { try { const oa = await authFromHash(_oauth); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } if (oa) { if (oa.username) onAuth(oa); else setNeedUser(oa); } } catch { } }
@@ -3433,7 +3469,7 @@ export default function App() {
     setLoaded(true);
   })(); }, []);
   useEffect(() => { if (loaded && uid && user) publishProfile(uid, user, { nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "", firstMoves: profile.firstMoves || null }); }, [loaded, uid, user, profile.nickname, profile.photo, profile.chesscom, currentTitle, profile.firstMoves]);
-  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive]);
+  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive, treeFocus })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive, treeFocus]);
   useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
   // (기능4) 해결 횟수로부터 새 칭호 획득 → 영구 저장 + 획득 알림(장착 버튼)
   const titleCounts = useMemo(() => familyCounts(puzzles, solved), [puzzles, solved]);
@@ -3456,7 +3492,7 @@ export default function App() {
     setUser(null); setUid(null); setDevOn(false); setConfirmLogout(false);
     setUnlocked(new Set()); setPuzzles([]); setSolved(new Set()); setDeletedPuzzles(new Set());
     setEarnedTitles(new Set()); setCurrentTitle(null); setProfile({ nickname: "", chesscom: "" });
-    setLearnSans([]); setLearnExtra({});
+    setLearnSans([]); setLearnExtra({}); setTreeFocus([]);
   }, []);
   // (UX7) 일정 시간 활동이 없으면 자동 로그아웃 — 로그인 상태가 무기한 유지되던 보안 문제 수정
   useEffect(() => {
@@ -3561,7 +3597,7 @@ export default function App() {
         {tab === "learn" && <LearnTab engine={engine} liveOn={liveOn} onFocusActive={setFocusActive} unlockOpening={unlockOpening} onLearned={onLearned} chesscom={chesscom} onSavePuzzle={onSavePuzzle} contentVer={contentVer} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} sans={learnSans} setSans={setLearnSans} future={learnFuture} setFuture={setLearnFuture} extra={learnExtra} setExtra={setLearnExtra} focus={learnFocus} setFocus={setLearnFocus} puzzles={puzzles} onOpenPuzzle={onOpenPuzzle} onOpenFocusBranch={setTab} />}
         {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} unlockAll={devUnlockAll} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} earnedTitles={devUnlockAll ? new Set(ALL_TITLE_IDS) : earnedTitles} titleCounts={titleCounts} currentTitle={currentTitle} onEquipTitle={equipTitle} />}
         {tab === "puzzle" && <PuzzleTab puzzles={puzzles} solved={solved} onSolved={onSolved} onDeletePuzzle={onDeletePuzzle} solveCounts={solveCounts} active={puzzleActive} setActive={setPuzzleActive} />}
-        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} onOpenOpening={onOpenOpening} />}
+        {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} onOpenOpening={onOpenOpening} treeFocus={treeFocus} setTreeFocus={setTreeFocus} />}
       </main>
 
       <nav style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: "linear-gradient(180deg,#2E1B10,#160C06)", borderTop: "1px solid #000", height: 66, paddingBottom: "env(safe-area-inset-bottom)" }}>
