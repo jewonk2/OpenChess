@@ -1262,7 +1262,7 @@ function AnimatedMove({ sans, san, size = 140, extraArrows = [], loopMs = 2000, 
           {rows.map((row, vr) => (
             <div key={vr} style={{ display: "flex" }}>
               {row.map((p, vc) => { const [r, c] = tx(vr, vc); const light = (r + c) % 2 === 0; const hideFrom = r === fr[0] && c === fr[1]; const isTo = r === to[0] && c === to[1];
-                return <div key={vc} style={{ width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", background: light ? T.boardLight : T.boardDark, boxShadow: (hideFrom || isTo) ? "inset 0 0 0 2px rgba(62,124,196,.6)" : "none" }}>{p && !hideFrom && <span style={{ fontSize: cell * 0.72, lineHeight: 1, opacity: isTo && slid ? 0 : 1, transform: isTo && slid ? "scale(.2) rotate(8deg)" : "scale(1)", transition: isTo ? "opacity .22s ease .44s, transform .22s ease .44s" : "none", color: p.c === "w" ? T.ivoryHi : "#0E0907" }}>{PIECE[p.t]}</span>}</div>; })}
+                return <div key={vc} style={{ width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", background: light ? T.boardLight : T.boardDark, boxShadow: (hideFrom || isTo) ? "inset 0 0 0 2px rgba(62,124,196,.6)" : "none" }}>{p && !hideFrom && <span key={"cap" + cyc} style={{ fontSize: cell * 0.72, lineHeight: 1, opacity: isTo && slid ? 0 : 1, transform: isTo && slid ? "scale(.2) rotate(8deg)" : "scale(1)", transition: isTo ? "opacity .22s ease .44s, transform .22s ease .44s" : "none", color: p.c === "w" ? T.ivoryHi : "#0E0907" }}>{PIECE[p.t]}</span>}</div>; })}
             </div>
           ))}
           {mp && <span key={cyc} style={{ position: "absolute", top: dfr0 * cell, left: dfr1 * cell, width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", fontSize: cell * 0.72, lineHeight: 1, color: mp.c === "w" ? T.ivoryHi : "#0E0907", transform: slid ? "translate(" + dx + "px," + dy + "px)" : "translate(0,0)", transition: slid ? "transform .6s cubic-bezier(.4,1.1,.5,1)" : "none", filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))", zIndex: 5 }}>{PIECE[mp.t]}</span>}
@@ -2125,6 +2125,39 @@ function TitleBadge({ id, earned = true, equipped = false, progress = null, onEq
     </div>
   );
 }
+// (UX4) 오답을 둔 뒤 원래 위치로 되돌아가는 걸 슬라이드 애니메이션으로 보여준다.
+// board는 오답을 반영한 현재(잘못된) 보드, from/to는 방금 둔(잘못된) 수의 출발/도착 칸.
+function RevertSlide({ board, from, to, size = 380, flip = false }) {
+  const cell = Math.floor(size / 8);
+  const [slid, setSlid] = useState(false);
+  useEffect(() => {
+    setSlid(false);
+    let r1 = 0, r2 = 0;
+    r1 = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => setSlid(true)); });
+    return () => { cancelAnimationFrame(r1); cancelAnimationFrame(r2); };
+  }, [from.join(","), to.join(",")]);
+  const dv = (r, c) => (flip ? [7 - r, 7 - c] : [r, c]);
+  const tx = (vr, vc) => (flip ? [7 - vr, 7 - vc] : [vr, vc]);
+  const rows = flip ? [...board].reverse().map((r) => [...r].reverse()) : board;
+  const [ffr, ffc] = dv(from[0], from[1]); const [ttr, ttc] = dv(to[0], to[1]);
+  const dx = slid ? (ffc - ttc) * cell : 0, dy = slid ? (ffr - ttr) * cell : 0;
+  const moving = board[to[0]][to[1]];   // 잘못된 수를 두어 지금 도착 칸에 있는 기물 — 원래 칸으로 되돌아감
+  return (
+    <div style={{ width: cell * 8 + 12, maxWidth: "100%", padding: 6, borderRadius: 9, background: "linear-gradient(160deg,#3A2516,#241509)", border: "1px solid #000", margin: "0 auto" }}>
+      <div style={{ position: "relative", borderRadius: 3, overflow: "hidden", border: "2px solid " + T.brass }}>
+        {rows.map((row, vr) => (
+          <div key={vr} style={{ display: "flex" }}>
+            {row.map((p, vc) => {
+              const [r, c] = tx(vr, vc); const light = (r + c) % 2 === 0; const hideAt = r === to[0] && c === to[1];
+              return <div key={vc} style={{ width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", background: light ? T.boardLight : T.boardDark }}>{p && !hideAt && <span style={{ fontSize: cell * 0.72, lineHeight: 1, color: p.c === "w" ? T.ivoryHi : "#0E0907" }}>{PIECE[p.t]}</span>}</div>;
+            })}
+          </div>
+        ))}
+        {moving && <span style={{ position: "absolute", top: ttr * cell, left: ttc * cell, width: cell, height: cell, display: "flex", alignItems: "center", justifyContent: "center", fontSize: cell * 0.72, lineHeight: 1, color: moving.c === "w" ? T.ivoryHi : "#0E0907", transform: "translate(" + dx + "px," + dy + "px)", transition: "transform .42s cubic-bezier(.4,1.1,.5,1)", filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))", zIndex: 5 }}>{PIECE[moving.t]}</span>}
+      </div>
+    </div>
+  );
+}
 function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
   const theme = puzzle.theme || "punish";
   const setup = [...puzzle.setupSans, puzzle.mistakeSan];
@@ -2135,7 +2168,8 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
   useEffect(() => { setIntro(true); }, [puzzle.id]);
   useEffect(() => { if (!intro) return; const t = setTimeout(() => setIntro(false), 1400); return () => clearTimeout(t); }, [intro, puzzle.id]);
   const [sel, setSel] = useState(null);
-  const [wrong, setWrong] = useState(null);     // { board, at:[r,c] }
+  const [wrong, setWrong] = useState(null);     // { board, at:[r,c], from:[r,c] }
+  const [reverting, setReverting] = useState(false);   // (UX4) 오답 후 원위치로 되돌아가는 애니메이션 중
   const [reply, setReply] = useState(null);      // { sans, san }  상대 응수 애니메이션
   const cur = [...setup, ...puzzle.solution.slice(0, idx)];
   const board = useMemo(() => boardFromSans(cur), [idx]);
@@ -2158,10 +2192,16 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
     if (!userToMove) return;
     const san = buildSan(board, from[0], from[1], to[0], to[1], color, ep); if (!san) return;
     if (stripSuffix(san) === stripSuffix(puzzle.solution[idx])) { setSel(null); setIdx((i) => i + 1); }
-    else { setWrong({ board: applySan(board, san, color), at: to }); setSel(null); }   // 틀린 수는 취소하지 않고 그대로 두고 ✕ 표시
+    else { setWrong({ board: applySan(board, san, color), at: to, from }); setSel(null); }   // 틀린 수는 1초 뒤 자동으로 원위치로 되돌림(아래 effect)
   };
   const onSquareClick = (sq) => { if (!userToMove) return; const p = board[sq[0]][sq[1]]; if (sel) { if (legalDests(board, sel[0], sel[1], color, ep).some(([r, c]) => r === sq[0] && c === sq[1])) { tryUserMove(sel, sq); return; } if (p && p.c === color) { setSel(sq); return; } setSel(null); } else if (p && p.c === color) setSel(sq); };
-  const retry = () => { setWrong(null); setSel(null); };
+  // (UX4) 재시도 버튼 없이, 오답을 두면 1초 후 자동으로 슬라이드 애니메이션과 함께 원위치로 되돌아간다.
+  useEffect(() => {
+    if (!wrong) { setReverting(false); return; }
+    const t1 = setTimeout(() => setReverting(true), 1000);
+    const t2 = setTimeout(() => { setWrong(null); setReverting(false); setSel(null); }, 1000 + 450);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [wrong]);
   const restart = () => { setWrong(null); setReply(null); setSel(null); setIdx(0); setIntro(true); };
   // (기능3) 마스코트 힌트: 왜 좋은/나쁜 수인지 + 무엇을 두어야 할지(기물·목표 칸)
   const hint = useMemo(() => {
@@ -2178,7 +2218,7 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
   const pm = [color === "w" ? "milku" : "kokoa", pmEmotion];
   const prompt = intro ? "직전 수 재생 중…"
     : done ? "✓ 완성! 모든 수를 찾았어요."
-    : wrong ? "✕ 다른 수예요. ‘재시도’를 눌러 다시 풀어 보세요."
+    : wrong ? "✕ 다른 수예요. 잠시 후 원래 위치로 되돌아갑니다."
       : reply ? "상대 응수 중…"
         : theme === "sacrifice" ? "당신 차례 — 기물을 희생하는 탁월한 수를 두세요."
           : theme === "advantage" ? "당신 차례 — 우위를 점하는 수를 두세요."
@@ -2206,12 +2246,13 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
         ? <AnimatedMove sans={puzzle.setupSans} san={puzzle.mistakeSan} size={boardSize} loopMs={0} flip={userColor === "b"} />
         : reply
           ? <AnimatedMove sans={reply.sans} san={reply.san} size={boardSize} loopMs={0} flip={userColor === "b"} />
+        : reverting
+          ? <RevertSlide board={wrong.board} from={wrong.from} to={wrong.at} size={boardSize} flip={userColor === "b"} />
         : <Board board={wrong ? wrong.board : board} flip={userColor === "b"} size={boardSize} selected={sel} wrongAt={wrong ? wrong.at : null} lastQ={lastQpz} showCoords={false} onSquareClick={onSquareClick} onPieceDrag={(sq) => { const p = board[sq[0]][sq[1]]; if (userToMove && p && p.c === color) setSel(sq); }} onDrop={(sq) => { if (userToMove && sel) tryUserMove(sel, sq); }} onMove={(from, to) => { if (userToMove) tryUserMove(from, to); }} legalTargets={userToMove && sel ? legalDests(board, sel[0], sel[1], color, ep) : []} showEval={false} interactive={userToMove} />}
       </div>
       <p style={{ fontSize: 13, color: done ? T.best : wrong ? T.blunder : T.ink, fontWeight: 700, marginTop: 12, textAlign: "center" }}>{prompt}</p>
       <div className="flex justify-center gap-2" style={{ marginTop: 12 }}>
         <button onClick={restart} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>{done ? "다시 풀기" : "처음부터"}</button>
-        {wrong && <button onClick={retry} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.brass, color: "#2A1A0E", border: "none", fontWeight: 800, cursor: "pointer", fontSize: 12 }}>재시도</button>}
       </div>
     </div>
   );
