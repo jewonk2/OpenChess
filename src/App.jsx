@@ -888,6 +888,19 @@ function EvalBar({ cp, width }) {
 }
 
 /* (UI2) 화면 폭에 맞춰 보드 크기를 산출 — 모바일에서 보드가 잘리지 않게 함 */
+// (UI1) 세로로 긴 모바일 화면 여부 — 상단 헤더 크기/여백을 줄이는 데 사용
+function useNarrow(bp = 480) {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= bp);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: " + bp + "px)");
+    const onChange = () => setNarrow(mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener("change", onChange); else mq.addListener(onChange);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", onChange); else mq.removeListener(onChange); };
+  }, [bp]);
+  return narrow;
+}
 function useBoardSize(max = 360) {
   const ref = useRef(null);
   const [size, setSize] = useState(Math.min(max, 320));
@@ -972,11 +985,23 @@ function Board({ board, flip, size = 336, arrows = [], legalTargets = [], select
 }
 
 /* 기보: "기보" 라벨 없이 굵은 흰색 텍스트만 */
-function SequenceBar({ sans }) {
-  const parts = []; sans.forEach((san, i) => { if (i % 2 === 0) parts.push((i / 2 + 1) + "." + san); else parts[parts.length - 1] += " " + san; });
+// (UI4) 기보의 각 수를 누르면 그 포지션으로 바로 이동한다(onJump). onJump가 없으면 예전처럼 순수 텍스트로 표시.
+function SequenceBar({ sans, onJump }) {
+  if (!sans.length) return <div style={{ color: T.ivoryHi, fontWeight: 800, fontSize: 13, fontFamily: "ui-monospace, monospace", letterSpacing: ".02em" }}><span style={{ opacity: .5 }}>시작 위치</span></div>;
+  if (!onJump) {
+    const parts = []; sans.forEach((san, i) => { if (i % 2 === 0) parts.push((i / 2 + 1) + "." + san); else parts[parts.length - 1] += " " + san; });
+    return <div style={{ color: T.ivoryHi, fontWeight: 800, fontSize: 13, fontFamily: "ui-monospace, monospace", letterSpacing: ".02em" }}>{parts.join("  ")}</div>;
+  }
+  const moveStyle = { cursor: "pointer", padding: "1px 3px", borderRadius: 4 };
   return (
-    <div style={{ color: T.ivoryHi, fontWeight: 800, fontSize: 13, fontFamily: "ui-monospace, monospace", letterSpacing: ".02em" }}>
-      {parts.length === 0 ? <span style={{ opacity: .5 }}>시작 위치</span> : parts.join("  ")}
+    <div className="flex flex-wrap items-center" style={{ color: T.ivoryHi, fontWeight: 800, fontSize: 13, fontFamily: "ui-monospace, monospace", letterSpacing: ".02em", gap: "0 2px" }}>
+      {sans.map((san, i) => (
+        <span key={i} style={{ whiteSpace: "nowrap" }}>
+          {i % 2 === 0 && (i / 2 + 1) + "."}
+          <span onClick={() => onJump(i + 1)} className="press" style={moveStyle}>{san}</span>
+          {i < sans.length - 1 ? (i % 2 === 0 ? " " : "  ") : ""}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1258,15 +1283,25 @@ function useMergedMoves(sans, engine, liveOn, extraSans, contentVer, mode, sortB
       const nm = nameOverride(key, m.san); const kwo = kwOverride(key, m.san);
       return { ...m, ...mainMain, ...(nm !== null ? { name: nm } : {}), ...(kwo ? { kw: kwo } : {}), disp: decorateSan(board, m.san, color) };
     });
-    // (UI6) 비이론 수 정렬 기준: 평가치(둘 차례 관점 최선이 맨 위) 또는 채택률(가장 많이 둔 순)
-    const ev = (m) => { const v = moverEval(m, ply); return v == null ? -Infinity : v; };
+    // (UI6/UX1) 비이론 수 정렬 기준: 평가치(둘 차례 관점 최선이 맨 위) 또는 채택률(가장 많이 둔 순).
+    // 라이브 엔진 평가 중에는 아직 자기 차례(live)가 오지 않은 수를 오래된 스냅샷 evalCp로 순위에
+    // 끼워넣지 않는다 — 서로 다른(스냅샷 대 실시간, depth도 다른) 값을 섞어 비교하면 "정렬이 이상하다"고
+    // 보이는 원인이었다. live가 아직 없는 수는 평가가 도착하기 전까지 맨 아래로 밀어둔다.
+    const liveActive = liveOn && engine && engine.status === "ready";
+    const ev = (m) => {
+      if (liveActive && !m.live) return -Infinity;
+      const v = moverEval(m, ply); return v == null ? -Infinity : v;
+    };
     const adopt = (m) => (m.adopt != null ? m.adopt : (m.games != null ? m.games : -Infinity));
     const rank = sortBy === "adopt" ? adopt : ev;
     const books = t.filter((m) => m.book);
     const nonbooks = t.filter((m) => !m.book).sort((a, b) => rank(b) - rank(a));
     return [...books, ...nonbooks];
-  }, [moves, ply, board, key, contentVer, sortBy]);
-  return { moves: tiled, posGames, engineNote, posEval: posEval != null ? posEval : fallbackEval, node };
+  }, [moves, ply, board, key, contentVer, sortBy, liveOn, engine && engine.status]);
+  // (UX1) 보드 위 평가치 바는 항상 "현재 후보 수 중 최선의 수" 평가에서 유도한다(같은 계산에서
+  // 파생되므로 평가치순 1위 수의 평가치와 구조적으로 항상 일치). 엔진의 포지션 직접 평가(posEval)는
+  // 후보 수 평가가 하나도 없을 때(막 포지션에 진입한 순간)의 임시 표시값으로만 사용한다.
+  return { moves: tiled, posGames, engineNote, posEval: fallbackEval != null ? fallbackEval : posEval, node };
 }
 
 /* ============================================================ 집중 학습 모드 ============================================================ */
@@ -1741,22 +1776,28 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const legalTargets = useMemo(() => sel ? legalDests(board, sel[0], sel[1], color, ep) : [], [sel, board, color, ep]);
 
   // 수를 두면 항상 도착 칸에 수 체계 아이콘을 띄운다(블록에 없거나 아직 미평가면 우선 '분석 중', 엔진으로 갱신)
-  const evalMoveKind = useCallback(async (prevSans, san) => {
+  // (UX2) onKind가 주어지면 "이 수 이후" 평가가 depth를 높여가며 갱신될 때마다 그 시점 기준의 등급을
+  // 다시 계산해 즉시 보고한다 — 보드 위 수 아이콘도 다른 곳과 동일하게 점진적으로 정확해진다.
+  const evalMoveKind = useCallback(async (prevSans, san, onKind) => {
     if (!liveOn || engine.status !== "ready") return null;
     const best = await engine.evaluate(sansToFen(prevSans), 13);
-    const after = await engine.evaluate(sansToFen([...prevSans, san]), 13);
-    if (!best || !after) return null;
+    if (!best) return null;
     const bestCp = best.mate != null ? (best.mate > 0 ? 1e5 : -1e5) : best.cp;     // 둘 차례(=우리) 관점 최선
-    const afterOpp = after.mate != null ? (after.mate > 0 ? 1e5 : -1e5) : after.cp; // 상대 관점
-    const ourCp = -afterOpp;
-    const loss = bestCp - ourCp;
-    let kind = tierOf(loss);
     const mw = prevSans.length % 2 === 0; const col = mw ? "w" : "b";
-    const decided = Math.abs(ourCp) > 200;   // 수를 둔 뒤에도 |평가|>2점 → 승부 기울어짐
-    const losing = ourCp <= -200;            // 이 수를 둔 쪽이 불리
-    if (["best", "excellent", "good"].includes(kind) && isSacrifice(boardFromSans(prevSans), san, col) && ourCp >= -40 && !(decided && losing)) kind = "brilliant";
-    if (decided) { if (kind === "blunder") kind = "mistake"; else if (kind === "mistake") kind = "inaccuracy"; else if (kind === "inaccuracy") kind = "good"; }   // 실수류 완화(양측)
-    return kind;
+    const computeKind = (after) => {
+      const afterOpp = after.mate != null ? (after.mate > 0 ? 1e5 : -1e5) : after.cp; // 상대 관점
+      const ourCp = -afterOpp;
+      const loss = bestCp - ourCp;
+      let kind = tierOf(loss);
+      const decided = Math.abs(ourCp) > 200;   // 수를 둔 뒤에도 |평가|>2점 → 승부 기울어짐
+      const losing = ourCp <= -200;            // 이 수를 둔 쪽이 불리
+      if (["best", "excellent", "good"].includes(kind) && isSacrifice(boardFromSans(prevSans), san, col) && ourCp >= -40 && !(decided && losing)) kind = "brilliant";
+      if (decided) { if (kind === "blunder") kind = "mistake"; else if (kind === "mistake") kind = "inaccuracy"; else if (kind === "inaccuracy") kind = "good"; }   // 실수류 완화(양측)
+      return kind;
+    };
+    const after = await engine.evaluate(sansToFen([...prevSans, san]), 13, onKind ? (partial) => onKind(computeKind(partial)) : undefined);
+    if (!after) return null;
+    return computeKind(after);
   }, [liveOn, engine.status]);
 
   const stampQ = useCallback((prevSans, brd, col, san, mm) => {
@@ -1764,7 +1805,10 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     if (!to) { setLastQ(null); return; }
     const known = !!mm && mm.kind && mm.kind !== "pending";
     setLastQ({ to, kind: known ? mm.kind : "pending" });
-    if (!known) evalMoveKind(prevSans, san).then((k) => { if (k) setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); });
+    if (!known) {
+      const onKind = (k) => { if (k) setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); };
+      evalMoveKind(prevSans, san, onKind).then(onKind);
+    }
   }, [evalMoveKind]);
 
   // (수 아이콘 지속 + UI5 정확도) 현재 포지션에 도달한 '마지막 수'의 품질을 항상 재계산.
@@ -1784,7 +1828,12 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     setLastQ({ to, kind: "pending" });
     let cancelled = false;
     if (liveOn && engine.status === "ready") {
-      evalMoveKind(prev, lastSan).then((k) => { if (!cancelled && k) { const under = /=/.test(lastSan) && !/=Q/.test(lastSan); if (under && !["inaccuracy", "mistake", "blunder"].includes(k)) k = "brilliant"; setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q); } });
+      const applyKind = (k) => {
+        if (cancelled || !k) return;
+        const under = /=/.test(lastSan) && !/=Q/.test(lastSan); if (under && !["inaccuracy", "mistake", "blunder"].includes(k)) k = "brilliant";
+        setLastQ((q) => (q && q.to && q.to[0] === to[0] && q.to[1] === to[1]) ? { ...q, kind: k } : q);
+      };
+      evalMoveKind(prev, lastSan, applyKind).then(applyKind);
     }
     return () => { cancelled = true; };
   }, [key, liveOn, engine.status]);
@@ -1793,9 +1842,13 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
     if (isExtra) setExtra((prev) => { const cur = prev[key] || []; if (cur.includes(san)) return prev; return { ...prev, [key]: [...cur, san] }; });
     const mm = moves.find((x) => stripSuffix(x.san) === stripSuffix(san));
     stampQ(sans, board, color, san, mm);
-    const next = [...sans, san]; setSans(next); setFuture([]); setSel(null); setDrag(null);
+    const next = [...sans, san]; setSans(next);
+    // (UI4) 되돌아간 뒤 원래 있던 다음 수와 같은 수를 다시 선택하면(=단순 재진입) 그 이후 기보를 보존하고,
+    // 실제로 다른 수를 선택했을 때(=분기)만 이후 기보를 새 라인으로 교체한다.
+    setFuture((f) => (f.length && stripSuffix(f[0]) === stripSuffix(san)) ? f.slice(1) : []);
+    setSel(null); setDrag(null);
     setLastMascot(mascotFor(sans, san));
-  }, [sans, key, moves, board, color, stampQ]);
+  }, [sans, key, moves, board, color, stampQ, future]);
 
   const tryMove = useCallback((from, to) => {
     if (from[0] === to[0] && from[1] === to[1]) return false;
@@ -1825,12 +1878,23 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   const onPieceDrag = useCallback((sq) => { const p = board[sq[0]][sq[1]]; if (p && p.c === color) { setDrag(sq); setSel(sq); } }, [board, color]);
   const onDrop = useCallback((sq) => { if (drag) { tryMove(drag, sq); setDrag(null); setSel(null); } }, [drag, tryMove]);
 
-  const back = () => {
-    if (!sans.length) return;
-    const last = sans[sans.length - 1]; const pkey = sans.slice(0, -1).join(" ");
-    setExtra((prev) => { if (prev[pkey] && prev[pkey].includes(last)) { const arr = prev[pkey].filter((x) => x !== last); const n = { ...prev }; if (arr.length) n[pkey] = arr; else delete n[pkey]; return n; } return prev; });
-    setFuture((f) => [last, ...f]); setSans(sans.slice(0, -1)); setSel(null); setLastQ(null);
+  // (UI4) 기보의 특정 수(ply)로 바로 이동 — 지나쳐 되돌린 수들은 지우지 않고 future 앞쪽에 보존한다.
+  // <(뒤로) 버튼도 결국 "한 수만큼 되돌리기"이므로 이 함수로 통일한다.
+  const jumpTo = (ply) => {
+    if (ply < 0 || ply >= sans.length) return;
+    const dropped = sans.slice(ply);
+    setExtra((prev) => {
+      let changed = false; const n = { ...prev };
+      for (let i = sans.length - 1; i >= ply; i--) {
+        const mv = sans[i]; const pkey = sans.slice(0, i).join(" ");
+        if (n[pkey] && n[pkey].includes(mv)) { const arr = n[pkey].filter((x) => x !== mv); if (arr.length) n[pkey] = arr; else delete n[pkey]; changed = true; }
+      }
+      return changed ? n : prev;
+    });
+    setFuture((f) => [...dropped, ...f]);
+    setSans(sans.slice(0, ply)); setSel(null); setLastQ(null);
   };
+  const back = () => jumpTo(sans.length - 1);
   const fwd = () => {
     if (!future.length) return; const h = future[0];
     const mm = moves.find((x) => stripSuffix(x.san) === stripSuffix(h));
@@ -1883,7 +1947,7 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
       <div>
         <div style={{ background: "linear-gradient(160deg,#2E1B10,#1B0F07)", borderRadius: 14, padding: 14, border: "1px solid #000", boxShadow: "inset 0 1px 0 rgba(255,255,255,.05)" }}>
           <div className="mb-3 flex items-center justify-between gap-2">
-            <SequenceBar sans={sans} />
+            <SequenceBar sans={sans} onJump={focus ? undefined : jumpTo} />
             <span className="inline-flex items-center gap-1" style={{ fontSize: 10, color: liveOn ? T.brassHi : T.inkSoft, whiteSpace: "nowrap" }}>{liveOn ? <Wifi size={12} /> : <WifiOff size={12} />}{engineNote || (liveOn ? "라이브" : "스냅샷")}</span>
           </div>
           <div ref={boardRef} style={{ width: "100%", maxWidth: 360, margin: "0 auto", position: "relative" }}>
@@ -2080,10 +2144,11 @@ function CollectionTab({ unlocked, unlockAll, liveOn, contentVer, chesscom, earn
                   <span style={{ fontSize: 13.5, fontWeight: 800, color: T.ivoryHi }}>{fam.label}</span>
                   <span style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{fmtFull(n)}회 해결</span>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {/* (UI3) 칭호가 너무 크게 표시되던 문제 — 한 열에 최소 2개 이상 배치되도록 그리드+compact로 축소 */}
+                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
                   {/* (UI9) 해금된 단계는 정상 표시, 바로 다음 미해금 단계는 회색+진행도, 그 이후는 잠금 아이콘 */}
                   {(() => { const nextIdx = TITLE_TIERS.findIndex((t) => !earned.has(titleId(fam.key, t.rank))); return TITLE_TIERS.map((t, i) => { const id = titleId(fam.key, t.rank); return (
-                    <TitleBadge key={id} id={id} earned={earned.has(id)} locked={nextIdx !== -1 && i > nextIdx} equipped={currentTitle === id} progress={n} onEquip={onEquipTitle} />
+                    <TitleBadge key={id} id={id} compact earned={earned.has(id)} locked={nextIdx !== -1 && i > nextIdx} equipped={currentTitle === id} progress={n} onEquip={onEquipTitle} />
                   ); }); })()}
                 </div>
               </div>
@@ -3509,6 +3574,7 @@ function NewPasswordModal({ recovery, onDone, onClose }) {
 }
 
 export default function App() {
+  const narrowHeader = useNarrow(480);
   const [tab, setTab] = useState("learn");
   const [unlocked, setUnlocked] = useState(new Set());
   const [newUnlocks, setNewUnlocks] = useState(0);
@@ -3653,12 +3719,14 @@ export default function App() {
       <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}"}</style>
       <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: -2, background: "radial-gradient(130% 120% at 50% -10%, #34230F 0%, #150C06 65%)" }} />
       <GeoBackdrop />
-      <header className="flex items-center justify-between" style={{ padding: "16px 20px", borderBottom: "1px solid #000", background: "linear-gradient(180deg,#3A2516,#2A1810)" }}>
-        <div className="flex items-center gap-3">
-          <Mascot name="milku" emotion="great" size={64} style={{ filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))" }} />
-          <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
+      {/* (UI1) 모바일(좁은 화면)에서 로고/닉네임/로그아웃 등이 너무 붙어 보이던 문제 —
+          좁은 화면에서는 마스코트/글자 크기와 여백을 줄이고, 그래도 안 맞으면 다음 줄로 감싸(rowGap) 겹치지 않게 한다 */}
+      <header className="flex items-center justify-between" style={{ padding: narrowHeader ? "12px 14px" : "16px 20px", borderBottom: "1px solid #000", background: "linear-gradient(180deg,#3A2516,#2A1810)", flexWrap: "wrap", rowGap: 10, columnGap: narrowHeader ? 10 : 14 }}>
+        <div className="flex items-center" style={{ gap: narrowHeader ? 8 : 12 }}>
+          <Mascot name="milku" emotion="great" size={narrowHeader ? 40 : 64} style={{ filter: "drop-shadow(0 2px 3px rgba(0,0,0,.5))" }} />
+          <div style={{ fontWeight: 900, fontSize: narrowHeader ? 16 : 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
-        <div className="flex items-center" style={{ gap: 10 }}>
+        <div className="flex items-center" style={{ gap: narrowHeader ? 6 : 10 }}>
           {user ? (
             <>
               <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800, maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user}</span>
