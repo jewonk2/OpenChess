@@ -1018,6 +1018,8 @@ function MoveTile({ m, ply, onClick, onFocus, posGames }) {
             </div>
             <span style={{ fontSize: 10, color: T.inkSoft, fontFamily: "ui-monospace,monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "62%" }}>{m.games != null ? fmtFull(m.games) + " / " + fmtFull(posGames) : "—"} · {m.adopt != null ? m.adopt.toFixed(1) + "%" : "—"}</span>
           </div>
+          {/* (UI) 도감 탭과 동일한 형식(백/무/흑 바 + %)으로 이 수의 승률 표기 */}
+          {m.wdl && <div onClick={onClick} style={{ marginTop: 7, cursor: "pointer" }}><WinBar wdl={m.wdl} height={6} /></div>}
         </div>
       </div>
     </div>
@@ -1492,10 +1494,11 @@ function FocusPanel({ fa, onBack, onOpenPuzzle, onJump, onOpenMasterGame }) {
   } = fa;
   const punish = curated;
   const [openingGameId, setOpeningGameId] = useState(null);
+  const [gameOpenError, setGameOpenError] = useState(false);
   const handleOpenGame = async (id) => {
     if (!onOpenMasterGame || openingGameId) return;
-    setOpeningGameId(id);
-    try { await onOpenMasterGame(id); } finally { setOpeningGameId(null); }
+    setOpeningGameId(id); setGameOpenError(false);
+    try { await onOpenMasterGame(id); } catch (e) { console.error("마스터 대국을 여는 데 실패:", e); setGameOpenError(true); } finally { setOpeningGameId(null); }
   };
   return (
     <div>
@@ -1525,7 +1528,9 @@ function FocusPanel({ fa, onBack, onOpenPuzzle, onJump, onOpenMasterGame }) {
           {kind === "brilliant" && <p style={{ fontSize: 10, color: T.inkSoft, textAlign: "center", marginTop: 4, lineHeight: 1.4, maxWidth: 150 }}><span style={{ color: T.blunder }}>빨강</span> 잡힐 경로 · <span style={{ color: T.brass }}>금색</span> 노리는 표적</p>}
         </div>
         <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ background: T.paper, border: "1px solid #DCCBA8", borderRadius: 12, padding: 12, height: "100%" }}>
+          {/* (버그 수정) box-sizing 기본값(content-box)에서 height:100%에 padding/border가 더해져
+              카드가 부모(flex stretch)보다 커지며 바로 아래 "마스터 대국" 블록과 겹치던 문제 수정 */}
+          <div style={{ background: T.paper, border: "1px solid #DCCBA8", borderRadius: 12, padding: 12, height: "100%", boxSizing: "border-box" }}>
             <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
               <div className="flex items-center gap-2"><BookOpen size={14} style={{ color: T.brass }} /><span style={{ fontSize: 12.5, fontWeight: 800, color: T.ink }}>해설</span></div>
               {canEditExpl && !editing && <button onClick={() => { setDraft(ownExplain || ""); setEditing(true); }} className="press" style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 6, border: "1px solid " + T.brass, background: "transparent", color: T.cocoa || "#5A3A22", cursor: "pointer" }}>✎ 편집</button>}
@@ -1593,15 +1598,16 @@ function FocusPanel({ fa, onBack, onOpenPuzzle, onJump, onOpenMasterGame }) {
         {loadingMasterGames ? <p style={{ fontSize: 12, color: T.inkSoft }}>불러오는 중…</p>
           : masterGames.length === 0 ? <p style={{ fontSize: 12, color: T.inkSoft }}>일치하는 마스터 대국을 찾지 못했습니다.</p>
             : masterGames.map((g) => (
-              <button key={g.id} onClick={() => handleOpenGame(g.id)} disabled={!!openingGameId} className="press text-left" style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 2px", borderTop: "1px solid #E4D5B6", background: "none", border: "none", borderTopWidth: 1, borderTopStyle: "solid", borderTopColor: "#E4D5B6", cursor: openingGameId ? "default" : "pointer", opacity: openingGameId && openingGameId !== g.id ? 0.5 : 1 }}>
+              <button key={g.id} onClick={() => handleOpenGame(g.id)} disabled={!!openingGameId} className="press text-left" style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 2px", border: "none", borderTop: "1px solid #E4D5B6", background: "none", cursor: openingGameId ? "default" : "pointer", opacity: openingGameId && openingGameId !== g.id ? 0.5 : 1 }}>
                 <div className="flex items-center justify-between" style={{ fontSize: 12.5 }}>
-                  <span>⬜ <b style={{ color: T.ink }}>{(g.white && g.white.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.white && g.white.rating) ?? "—"}</span></span>
+                  <span>⬜ {g.winner === "white" && <span title="승리">👑</span>} <b style={{ color: T.ink }}>{(g.white && g.white.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.white && g.white.rating) ?? "—"}</span></span>
                   <span style={{ fontWeight: 800, fontFamily: "ui-monospace,monospace", color: g.winner === "white" ? T.best : g.winner === "black" ? T.blunder : T.inkSoft }}>{g.winner === "white" ? "1–0" : g.winner === "black" ? "0–1" : "½–½"}</span>
                 </div>
-                <div style={{ fontSize: 12.5, marginTop: 2 }}>⬛ <b style={{ color: T.ink }}>{(g.black && g.black.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.black && g.black.rating) ?? "—"}</span></div>
+                <div style={{ fontSize: 12.5, marginTop: 2 }}>⬛ {g.winner === "black" && <span title="승리">👑</span>} <b style={{ color: T.ink }}>{(g.black && g.black.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.black && g.black.rating) ?? "—"}</span></div>
                 <div style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 2 }}>{g.year || ""}{openingGameId === g.id ? " · 기보를 불러오는 중…" : ""}</div>
               </button>
             ))}
+        {gameOpenError && <p style={{ fontSize: 11.5, color: T.blunder, marginTop: 6 }}>대국 기보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.</p>}
       </div>
       {/* chess.com 통계 */}
       <div style={{ background: T.paper, border: "1px solid #DCCBA8", borderRadius: 12, padding: 13, marginTop: 12 }}>
@@ -1847,11 +1853,10 @@ function LearnTab({ engine, liveOn, onFocusActive, unlockOpening, onLearned, che
   // (기능) 집중학습의 마스터 대국을 클릭 — 집중학습을 종료하고 그 대국의 마지막 포지션으로 보드를 옮긴 뒤,
   // 보드 상단 SequenceBar에 그 대국의 전체 기보가 표시되도록 sans를 그 대국의 전체 수순으로 교체한다.
   const onOpenMasterGame = async (gameId) => {
-    try {
-      const gameSans = await fetchMasterGamePgn(gameId);
-      if (!gameSans || !gameSans.length) return;
-      setFocus(null); setSans(gameSans); setFuture([]); setSel(null); setLastQ(null);
-    } catch { /* 네트워크 실패 시 조용히 무시 — 집중학습 화면은 그대로 유지 */ }
+    const gameSans = await fetchMasterGamePgn(gameId);   // 실패하면 그대로 throw — 호출부(FocusPanel)에서 오류 메시지를 표시한다
+    if (!gameSans || !gameSans.length) throw new Error("빈 기보");
+    if (focus && focus.isNew) onLearned(focus.name);   // 뒤로가기와 동일하게 새 오프닝 학습 처리를 유지한 뒤 이동
+    setFocus(null); setSans(gameSans); setFuture([]); setSel(null); setLastQ(null);
   };
 
   const node = snapNode(sans);
