@@ -317,6 +317,38 @@ async function genAdvantageLine(engine, startSans, opts) {
   if (out.length) { const lastMoverWhite = (startSans.length + out.length - 1) % 2 === 0; if (lastMoverWhite !== userWhite) out.pop(); }   // 사용자 수로 끝맺음
   return out;
 }
+// (기능1) 최선 라인 외에, 해결자의 첫 수 이후 "상대가 다르게 응수했다면" 가정한 라인을 추가로 만든다.
+// 하나는 상대 응수 후보 중 평가치 2위 수, 다른 하나는 실제로 가장 많이 채택된(Lichess) 수를 상대의 응수로 고정하고,
+// 그 이후는 다시 해결자 관점 최선 수순(genAdvantageLine)으로 이어 붙인다. 기존 최선 라인과 같은 응수는 제외한다.
+async function buildAltLines(engine, solverStartSans, solution, genOpts) {
+  if (!solution || solution.length < 2) return [];
+  const posAfterFirst = [...solverStartSans, solution[0]]; // 상대가 응수할 차례
+  const seen = new Set([stripSuffix(solution[1])]);
+  const alts = [];
+  try {
+    const brd = boardFromSans(posAfterFirst);
+    const color = posAfterFirst.length % 2 === 0 ? "w" : "b";
+    const pvs = await engine.evaluateMulti(sansToFen(posAfterFirst), 10, 3);
+    if (pvs && pvs[1]) {
+      const s = uciToSan(brd, pvs[1].uci, color);
+      if (s && !seen.has(stripSuffix(s))) { alts.push({ tag: "eval2", move: s }); seen.add(stripSuffix(s)); }
+    }
+  } catch { /* 실패 시 이 대안은 생략 */ }
+  try {
+    const lc = await fetchLichess(posAfterFirst, false);
+    if (lc && lc.moves && lc.moves.length) {
+      const top = [...lc.moves].sort((a, b) => (b.adopt || 0) - (a.adopt || 0))[0];
+      if (top && !seen.has(stripSuffix(top.san))) { alts.push({ tag: "adopt", move: top.san }); seen.add(stripSuffix(top.san)); }
+    }
+  } catch { /* 실패 시 이 대안은 생략 */ }
+  const lines = [];
+  for (const alt of alts) {
+    const afterAlt = [...posAfterFirst, alt.move];
+    const rest = await genAdvantageLine(engine, afterAlt, genOpts);
+    lines.push({ tag: alt.tag, solution: [solution[0], alt.move, ...rest] });
+  }
+  return lines;
+}
 
 /* ============================================================ 라이브 Lichess Explorer ============================================================ */
 const _lichessCache = new Map(); // url -> { t, data }
@@ -1022,6 +1054,10 @@ function Board({ board, flip, size = 336, arrows = [], legalTargets = [], select
 
 /* 기보: "기보" 라벨 없이 굵은 흰색 텍스트만 */
 // (UI4) 기보의 각 수를 누르면 그 포지션으로 바로 이동한다(onJump). onJump가 없으면 예전처럼 순수 텍스트로 표시.
+function sansToPgnText(sans) {
+  const parts = []; sans.forEach((san, i) => { if (i % 2 === 0) parts.push((i / 2 + 1) + "." + san); else parts[parts.length - 1] += " " + san; });
+  return parts.join(" ");
+}
 function SequenceBar({ sans, onJump }) {
   if (!sans.length) return <div style={{ color: T.ivoryHi, fontWeight: 800, fontSize: 13, fontFamily: "ui-monospace, monospace", letterSpacing: ".02em" }}><span style={{ opacity: .5 }}>시작 위치</span></div>;
   if (!onJump) {
@@ -1051,8 +1087,7 @@ function NotationTools({ sans, onLoadPgn }) {
   const [copied, setCopied] = useState(false);
   const iconBtn = { width: 26, height: 26, borderRadius: 7, background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.18)", color: T.brassHi, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 };
   const copy = async () => {
-    const parts = []; sans.forEach((san, i) => { if (i % 2 === 0) parts.push((i / 2 + 1) + "." + san); else parts[parts.length - 1] += " " + san; });
-    const out = parts.length ? parts.join(" ") : "(시작 위치)";
+    const out = sansToPgnText(sans) || "(시작 위치)";
     try { await navigator.clipboard.writeText(out); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { }
   };
   const submit = () => {
@@ -1568,7 +1603,13 @@ function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canA
       if (curated) { onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: curated.opening, setupSans: [...sans], mistakeSan: san, solution: curated.line, steps: curated.steps }); return; }
       if (engine && engine.status === "ready") {
         let cancelled = false;
-        genAdvantageLine(engine, [...sans, san], { target: 170, maxPlies: 8, requireCapture: true }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+        const opts = { target: 170, maxPlies: 8, requireCapture: true };
+        genAdvantageLine(engine, [...sans, san], opts).then(async (line) => {
+          if (cancelled || line.length < 1) return;
+          const op = title || "오프닝";
+          const lines = [{ tag: "best", solution: line }, ...(await buildAltLines(engine, [...sans, san], line, opts))];
+          if (!cancelled) onSavePuzzle({ id, theme: "punish", name: puzzleName("punish", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, lines, steps: [], auto: true });
+        });
         return () => { cancelled = true; };
       }
       return;
@@ -1576,15 +1617,26 @@ function useFocusAnalysis(focus, { chesscom, onSavePuzzle, engine, canEdit, canA
     // 부정확한 수 → 우위 점하기 (실수 응징과 동일 방식)
     if (kind === "inaccuracy" && engine && engine.status === "ready") {
       let cancelled = false;
-      genAdvantageLine(engine, [...sans, san], { target: 220, maxPlies: 8 }).then((line) => { if (!cancelled && line.length >= 1) { const op = title || "오프닝"; onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, steps: [], auto: true }); } });
+      const opts = { target: 220, maxPlies: 8 };
+      genAdvantageLine(engine, [...sans, san], opts).then(async (line) => {
+        if (cancelled || line.length < 1) return;
+        const op = title || "오프닝";
+        const lines = [{ tag: "best", solution: line }, ...(await buildAltLines(engine, [...sans, san], line, opts))];
+        if (!cancelled) onSavePuzzle({ id: "adv|" + id, theme: "advantage", name: puzzleName("advantage", [...sans], san), opening: op, setupSans: [...sans], mistakeSan: san, solution: line, lines, steps: [], auto: true });
+      });
       return () => { cancelled = true; };
     }
     // 탁월한 수 → 기물 희생하기 (직전 수 애니메이션 후 탁월한 수 + 보상 실현까지 이어지는 라인)
     if (kind === "brilliant" && sans.length >= 1 && engine && engine.status === "ready") {
       const op = title || "오프닝";
       let cancelled = false;
-      genAdvantageLine(engine, [...sans, san], { target: 110, maxPlies: 8, requireMaterialRecovery: true }).then((line) => {
-        if (!cancelled) onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution: [san, ...line], steps: [], auto: true });
+      const opts = { target: 110, maxPlies: 8, requireMaterialRecovery: true };
+      genAdvantageLine(engine, [...sans, san], opts).then(async (line) => {
+        if (cancelled) return;
+        const solution = [san, ...line];
+        // (기능1) 희생 테마는 "희생 수 자체"가 solution[0]이며, sans 위치(=studied 수 san이 두어지기 직전)에서 둔다.
+        const lines = [{ tag: "best", solution }, ...(await buildAltLines(engine, sans, solution, opts))];
+        if (!cancelled) onSavePuzzle({ id: "sac|" + id, theme: "sacrifice", name: puzzleName("sacrifice", sans.slice(0, -1), sans[sans.length - 1]), opening: op, setupSans: sans.slice(0, -1), mistakeSan: sans[sans.length - 1], solution, lines, steps: [], auto: true });
       });
       return () => { cancelled = true; };
     }
@@ -2304,10 +2356,8 @@ function puzzleName(theme, setupSans, mistakeSan) {
 }
 // (기능2) 저장 직전 최종 안전장치: setup+solution 전체를 시작 위치부터 다시 재생하며 각 수가
 // "그 시점에 둘 차례인 쪽"의 합법수인지 검증한다. 하나라도 어긋나면(불법수·차례 뒤바뀜 등) 저장을 막는다.
-function isPuzzleSequenceValid(pz) {
+function isSanSequenceValid(setup, solution) {
   try {
-    const setup = [...(pz.setupSans || []), pz.mistakeSan].filter(Boolean);
-    const solution = pz.solution || [];
     if (!setup.length || !solution.length) return false;
     let board = startBoard();
     let ply = 0;
@@ -2320,6 +2370,12 @@ function isPuzzleSequenceValid(pz) {
     }
     return true;
   } catch { return false; }
+}
+// (기능1) puzzle.lines(다중 라인)가 있으면 그 라인 전부를, 없으면 기존 solution 하나만 검증한다.
+function isPuzzleSequenceValid(pz) {
+  const setup = [...(pz.setupSans || []), pz.mistakeSan].filter(Boolean);
+  const lines = (pz.lines && pz.lines.length) ? pz.lines : [{ tag: "best", solution: pz.solution }];
+  return lines.every((l) => isSanSequenceValid(setup, l.solution || []));
 }
 // (UX6) 퍼즐 고유번호: id로부터 안정적으로 도출(같은 위치·수 → 같은 번호, 사용자 간 공통)
 function puzzleNo(id) { let h = 2166136261; const s = String(id); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) % 900000 + 100000; } // 6자리
@@ -2471,40 +2527,61 @@ function RevertSlide({ board, from, to, size = 380, flip = false }) {
     </div>
   );
 }
-function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
+// (기능1) 별 3개(라인) 아이콘 — 해결한 라인 수만큼 채워서 표시
+function LineStars({ total, solved }) {
+  return (
+    <div className="flex items-center gap-1">
+      {Array.from({ length: total }, (_, i) => (
+        <Star key={i} size={15} fill={i < solved ? T.brass : "none"} style={{ color: i < solved ? T.brass : "rgba(0,0,0,.25)" }} />
+      ))}
+    </div>
+  );
+}
+const LINE_TAG_LABEL = { best: "최선의 응수", eval2: "차선의 응수", adopt: "실전에서 가장 많이 둔 응수" };
+function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags }) {
   const theme = puzzle.theme || "punish";
   const setup = [...puzzle.setupSans, puzzle.mistakeSan];
   const userColor = setup.length % 2 === 0 ? "w" : "b";   // 보드 방향 고정(상대 응수 때도 반전하지 않음)
+  // (기능1) 최선/차선(평가치 2위)/채택률 최고 — 최대 3개 라인. 예전 단일-solution 퍼즐과도 호환.
+  const allLines = useMemo(() => (puzzle.lines && puzzle.lines.length ? puzzle.lines : [{ tag: "best", solution: puzzle.solution }]), [puzzle.id]);
+  const totalLines = allLines.length;
+  const solvedTagSet = useMemo(() => new Set(solvedTags || []), [solvedTags]);
+  const [sessionSolved, setSessionSolved] = useState(() => new Set());
+  useEffect(() => { setSessionSolved(new Set()); }, [puzzle.id]);
+  const solvedNow = useMemo(() => new Set([...solvedTagSet, ...sessionSolved]), [solvedTagSet, sessionSolved]);
+  const [activeTag, setActiveTag] = useState(() => (allLines.find((l) => !solvedTagSet.has(l.tag)) || allLines[0]).tag);
+  const activeLine = allLines.find((l) => l.tag === activeTag) || allLines[0];
+  const solution = activeLine.solution;
   const [boardSize, boardRef] = useBoardSize(380);
   const [idx, setIdx] = useState(0);
   const [intro, setIntro] = useState(true);   // (UX7) 진입/처음부터 시 직전 수를 1회 재생
-  useEffect(() => { setIntro(true); }, [puzzle.id]);
-  useEffect(() => { if (!intro) return; const t = setTimeout(() => setIntro(false), 1400); return () => clearTimeout(t); }, [intro, puzzle.id]);
+  useEffect(() => { setIntro(true); }, [puzzle.id, activeTag]);
+  useEffect(() => { if (!intro) return; const t = setTimeout(() => setIntro(false), 1400); return () => clearTimeout(t); }, [intro, puzzle.id, activeTag]);
   const [sel, setSel] = useState(null);
   const [wrong, setWrong] = useState(null);     // { board, at:[r,c], from:[r,c] }
   const [reverting, setReverting] = useState(false);   // (UX4) 오답 후 원위치로 되돌아가는 애니메이션 중
   const [reply, setReply] = useState(null);      // { sans, san }  상대 응수 애니메이션
-  const cur = [...setup, ...puzzle.solution.slice(0, idx)];
-  const board = useMemo(() => boardFromSans(cur), [idx]);
+  const cur = [...setup, ...solution.slice(0, idx)];
+  const board = useMemo(() => boardFromSans(cur), [idx, activeTag]);
   const color = cur.length % 2 === 0 ? "w" : "b";
   const ep = epTarget(cur);
-  const done = idx >= puzzle.solution.length;
+  const done = idx >= solution.length;
   const userToMove = !done && idx % 2 === 0 && !wrong && !reply && !intro;
-  useEffect(() => { if (done && onSolved) onSolved(puzzle.id); }, [done]);
+  useEffect(() => { if (done && onLineSolved) onLineSolved(puzzle.id, activeTag, totalLines); if (done) setSessionSolved((s) => (s.has(activeTag) ? s : new Set(s).add(activeTag))); }, [done]);
   // 상대(컴퓨터) 응수: 보드 반전 없이 수 애니메이션을 보여준 뒤 진행
   useEffect(() => {
     if (done || wrong || idx % 2 !== 1) return;
     let t2;
     const t1 = setTimeout(() => {   // (UI4) 정답 수 뒤 1초 후 컴퓨터 응수 — 사용자가 결과를 보도록
-      setReply({ sans: [...setup, ...puzzle.solution.slice(0, idx)], san: puzzle.solution[idx] });
+      setReply({ sans: [...setup, ...solution.slice(0, idx)], san: solution[idx] });
       t2 = setTimeout(() => { setReply(null); setIdx((i) => i + 1); }, 900);
     }, 1000);
     return () => { clearTimeout(t1); if (t2) clearTimeout(t2); };
-  }, [idx, done, wrong]);
+  }, [idx, done, wrong, activeTag]);
   const tryUserMove = (from, to) => {
     if (!userToMove) return;
     const san = buildSan(board, from[0], from[1], to[0], to[1], color, ep); if (!san) return;
-    if (stripSuffix(san) === stripSuffix(puzzle.solution[idx])) { setSel(null); setIdx((i) => i + 1); }
+    if (stripSuffix(san) === stripSuffix(solution[idx])) { setSel(null); setIdx((i) => i + 1); }
     else { setWrong({ board: applySan(board, san, color), at: to, from }); setSel(null); }   // 틀린 수는 1초 뒤 자동으로 원위치로 되돌림(아래 effect)
   };
   const onSquareClick = (sq) => { if (!userToMove) return; const p = board[sq[0]][sq[1]]; if (sel) { if (legalDests(board, sel[0], sel[1], color, ep).some(([r, c]) => r === sq[0] && c === sq[1])) { tryUserMove(sel, sq); return; } if (p && p.c === color) { setSel(sq); return; } setSel(null); } else if (p && p.c === color) setSel(sq); };
@@ -2516,17 +2593,24 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [wrong]);
   const restart = () => { setWrong(null); setReply(null); setSel(null); setIdx(0); setIntro(true); };
-  // (기능3) 마스코트 힌트: 왜 좋은/나쁜 수인지 + 무엇을 두어야 할지(기물·목표 칸)
-  const hint = useMemo(() => {
-    const info = sanSrc(boardFromSans(setup), stripSuffix(puzzle.solution[0]), userColor);
-    const pk = info ? PIECE_KOR[info.piece] : null;
-    const dest = info ? FILES[info.to[1]] + (8 - info.to[0]) : null;
-    if (theme === "sacrifice") return `이 위치에는 기물을 희생하는 탁월한 수가 있어요. 힌트: ${pk || "기물"}을(를) 적극적으로 활용해 보세요.`;
-    if (theme === "advantage") return `상대의 부정확한 수예요. 우위를 점할 기회입니다. 힌트: ${pk || "기물"}을(를) ${dest || "유리한 칸"}(으)로 두어 압박하세요.`;
-    return `상대의 이 수는 기물을 잃거나 포지션이 나빠지는 실수예요. 힌트: ${pk || "기물"}을(를) 움직여 ${dest || "약점"}을(를) 노리세요.`;
-  }, [puzzle.id]);
+  const switchLine = (tag) => { setActiveTag(tag); setWrong(null); setReply(null); setSel(null); setIdx(0); setIntro(true); setHintText(null); };
+  // (기능2) 힌트 체계 전면 개편 — 더 이상 마스코트가 처음부터 힌트를 말하지 않는다. 하단 "힌트" 버튼을 누르면
+  // 그 시점(idx)에 실제로 두어야 할 수를 기준으로 "움직여야 할 기물" 또는 "중요한 칸" 중 하나를 무작위로 알려준다.
+  const [hintText, setHintText] = useState(null);
+  const [hintKey, setHintKey] = useState(0);
+  useEffect(() => { setHintText(null); }, [idx, activeTag, wrong]);
+  const requestHint = () => {
+    if (!userToMove || !solution[idx]) return;
+    const info = sanSrc(board, stripSuffix(solution[idx]), color);
+    if (!info) return;
+    const pk = PIECE_KOR[info.piece] || "기물";
+    const dest = FILES[info.to[1]] + (8 - info.to[0]);
+    const bySquare = Math.random() < 0.5;
+    setHintText(bySquare ? `힌트: ${dest} 칸이 중요해요.` : `힌트: ${pk}을(를) 움직여 보세요.`);
+    setHintKey((k) => k + 1);
+  };
   // (UX2) 마스코트 캐릭터는 둘 차례(백=MILKU, 흑=KOKOA), 표정은 풀이 상태에 따름
-  const pmEmotion = intro ? "think" : done ? "celebrate" : wrong ? "angry" : reply ? "wink"
+  const pmEmotion = intro ? "think" : done ? "celebrate" : wrong ? "angry" : reply ? "wink" : hintText ? "wink"
     : theme === "sacrifice" ? "great" : theme === "advantage" ? "think" : "surprise";
   const pm = [color === "w" ? "milku" : "kokoa", pmEmotion];
   const prompt = intro ? "직전 수 재생 중…"
@@ -2536,28 +2620,35 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
         : theme === "sacrifice" ? "당신 차례 — 기물을 희생하는 탁월한 수를 두세요."
           : theme === "advantage" ? "당신 차례 — 우위를 점하는 수를 두세요."
             : "당신 차례 — 실수를 응징하는 최선의 수를 두세요.";
+  const idleBubble = intro ? "직전 수를 살펴보는 중이에요…" : wrong ? "다른 수예요. 다시 시도해 보세요!" : reply ? "상대가 응수하고 있어요…" : "막히면 아래 힌트 버튼을 눌러보세요.";
+  const bubbleText = done ? "훌륭해요! 다음 퍼즐도 도전해 보세요." : (hintText || idleBubble);
   const lastQpz = useMemo(() => {
     if (idx === 0 || wrong || reply || intro) return null;
-    const prevCur = [...setup, ...puzzle.solution.slice(0, idx - 1)];
-    const mvSan = puzzle.solution[idx - 1];
+    const prevCur = [...setup, ...solution.slice(0, idx - 1)];
+    const mvSan = solution[idx - 1];
     const moverColor = prevCur.length % 2 === 0 ? "w" : "b";
     const info = sanSrc(boardFromSans(prevCur), stripSuffix(mvSan), moverColor);
     if (!info || !info.to) return null;
     // (UI5) 무조건 "최선"으로 고정하지 않고, 탁월한(희생) 수라면 그 등급을 그대로 표기한다.
     const kind = (theme === "sacrifice" && idx === 1) || isSacrifice(boardFromSans(prevCur), mvSan, moverColor) ? "brilliant" : "best";
     return { to: info.to, kind };   // 정답/응수 아이콘 표기
-  }, [idx, wrong, reply, intro, theme]);
+  }, [idx, wrong, reply, intro, theme, activeTag]);
+  const remainingLines = allLines.filter((l) => l.tag !== activeTag && !solvedNow.has(l.tag));
+  const fullyComplete = solvedNow.size >= totalLines;
   return (
     <div style={{ position: "relative", background: T.paper, border: "1px solid #DCCBA8", borderRadius: 14, padding: 16, maxWidth: 460, margin: "0 auto" }}>
       <button onClick={onClose} aria-label="닫기" className="press" style={{ position: "absolute", top: 12, right: 12, zIndex: 10, width: 30, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontSize: 15, fontWeight: 800, lineHeight: 1, cursor: "pointer" }}>✕</button>
-      <div style={{ marginBottom: 12, paddingRight: 38 }}>
+      <div className="flex items-start justify-between" style={{ marginBottom: 12, paddingRight: 38, gap: 8 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 10.5, fontWeight: 800, color: T.brass, marginBottom: 2 }}>{THEME_LABEL[theme]}</div>
+          <div style={{ fontSize: 10.5, fontWeight: 800, color: T.brass, marginBottom: 2 }}>{THEME_LABEL[theme]}{totalLines > 1 && <span style={{ color: T.inkSoft, fontWeight: 600 }}> · {LINE_TAG_LABEL[activeTag] || activeTag}</span>}</div>
           <div style={{ fontSize: 15, fontWeight: 800, color: T.ink, lineHeight: 1.35 }}>{puzzle.name}</div>
           <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 4 }}>#{puzzleNo(puzzle.id)}{solveCount != null && solveCount > 0 ? " · " + fmtFull(solveCount) + "명이 풀었습니다!" : ""}</div>
         </div>
+        {totalLines > 1 && <div style={{ flexShrink: 0, paddingTop: 2 }}><LineStars total={totalLines} solved={solvedNow.size} /></div>}
       </div>
-      <div style={{ marginBottom: 10 }}><MascotBubble text={done ? "훌륭해요! 다음 퍼즐도 도전해 보세요." : hint} ply={0} mascot={pm[0]} emotion={pm[1]} /></div>
+      <div key={"bubble-" + hintKey} style={{ marginBottom: 10, animation: "lockpop .35s ease" }}><MascotBubble text={bubbleText} ply={0} mascot={pm[0]} emotion={pm[1]} /></div>
+      {/* (기능1) 두었던 수가 하나씩 기보로 표기되도록 */}
+      <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginBottom: 8, minHeight: 16, textAlign: "center" }}>{sansToPgnText([...setup, ...solution.slice(0, idx)]) || " "}</div>
       <div ref={boardRef} style={{ width: "100%", maxWidth: 380, margin: "0 auto" }}>
       {intro
         ? <AnimatedMove sans={puzzle.setupSans} san={puzzle.mistakeSan} size={boardSize} loopMs={0} flip={userColor === "b"} />
@@ -2570,19 +2661,44 @@ function PuzzleSolver({ puzzle, onClose, onSolved, solveCount }) {
       <p style={{ fontSize: 13, color: done ? T.best : wrong ? T.blunder : T.ink, fontWeight: 700, marginTop: 12, textAlign: "center" }}>{prompt}</p>
       <div className="flex justify-center gap-2" style={{ marginTop: 12 }}>
         <button onClick={restart} className="press" style={{ padding: "6px 14px", borderRadius: 9, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>{done ? "다시 풀기" : "처음부터"}</button>
+        {userToMove && <button onClick={requestHint} className="press" style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 14px", borderRadius: 9, background: "transparent", color: "#8A6A18", border: "1px solid " + T.brass, fontWeight: 700, cursor: "pointer", fontSize: 12 }}><Lightbulb size={13} /> 힌트</button>}
       </div>
+      {done && (fullyComplete ? (
+        <div style={{ marginTop: 14, textAlign: "center", background: "linear-gradient(180deg,#3A2516,#241509)", borderRadius: 12, padding: "12px 14px", border: "1px solid " + T.brass }}>
+          <div style={{ color: T.brassHi, fontWeight: 800, fontSize: 13 }}>🎉 완전 해결! 별 {totalLines}개를 모두 모았어요.</div>
+        </div>
+      ) : remainingLines.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 800, color: T.brass, marginBottom: 6, textAlign: "center" }}>다른 라인도 풀어보세요</div>
+          <div className="flex flex-col gap-2">
+            {remainingLines.map((l) => {
+              const teaserPly = setup.length + 1; // 상대(컴퓨터)의 첫 응수 = l.solution[1]
+              const teaser = l.solution[1] ? moveNumber(teaserPly) + l.solution[1] : "";
+              return (
+                <button key={l.tag} onClick={() => switchLine(l.tag)} className="press" style={{ padding: "8px 12px", borderRadius: 9, background: T.ivoryHi, border: "1px solid #C9B58C", color: T.ink, fontWeight: 700, cursor: "pointer", fontSize: 12, textAlign: "left" }}>
+                  <span style={{ color: T.brass, fontWeight: 800 }}>{LINE_TAG_LABEL[l.tag] || l.tag}</span> — 상대가 <span style={{ fontFamily: "ui-monospace,monospace" }}>{teaser}</span>(으)로 응수한다면?
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
-function PuzzleCard({ p, isSolved, onClick, onDelete, solveCount }) {
+function PuzzleCard({ p, isSolved, onClick, onDelete, solveCount, solvedTags }) {
   const setupLen = (p.setupSans ? p.setupSans.length : 0) + 1;
   const flip = setupLen % 2 !== 0; // userColor 흑이면 반전
   const hasPreview = p.setupSans && p.mistakeSan;
+  const totalLines = (p.lines && p.lines.length) || 1;
   return (
     <div onClick={onClick} className="press text-left" style={{ borderRadius: 14, padding: 14, background: isSolved ? "linear-gradient(180deg,#E7F0DC,#D2E2BC)" : "linear-gradient(180deg," + T.ivoryHi + ",#E2D2B2)", boxShadow: "0 4px 0 " + (isSolved ? "#9DB97E" : "#B59A6E"), border: "1px solid " + (isSolved ? "#A9C589" : "#CDB98E"), cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", minHeight: 132, height: "100%" }}>
       {onDelete && <button onClick={(e) => { e.stopPropagation(); onDelete(p.id); }} aria-label="삭제" className="press" style={{ position: "absolute", top: 6, right: 6, zIndex: 10, width: 24, height: 24, borderRadius: 7, background: "rgba(40,24,12,.78)", color: "#F4C8C8", border: "1px solid #000", fontSize: 13, fontWeight: 800, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>✕</button>}
       {hasPreview && <div style={{ marginBottom: 10 }}><AnimatedMove sans={p.setupSans} san={p.mistakeSan} size={168} loopMs={2400} flip={flip} /></div>}
-      <div className="flex items-center justify-between" style={{ flexShrink: 0 }}><div style={{ fontSize: 11, color: isSolved ? T.best : T.brass, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "62%" }}>{p.opening}</div>{isSolved && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: T.best, fontSize: 11, fontWeight: 800, flexShrink: 0, marginRight: 22 }}><Check size={14} /> 해결됨</span>}</div>
+      <div className="flex items-center justify-between" style={{ flexShrink: 0 }}>
+        <div style={{ fontSize: 11, color: isSolved ? T.best : T.brass, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "50%" }}>{p.opening}</div>
+        {totalLines > 1 ? <LineStars total={totalLines} solved={(solvedTags || []).length} /> : (isSolved && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: T.best, fontSize: 11, fontWeight: 800, flexShrink: 0, marginRight: 22 }}><Check size={14} /> 해결됨</span>)}
+      </div>
       <div style={{ fontSize: 13.5, fontWeight: 800, color: T.ink, marginTop: 7, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.4 }}>{p.name}</div>
       <div className="flex items-center justify-between" style={{ marginTop: "auto", paddingTop: 12, gap: 6 }}>
         <span style={{ fontSize: 10.5, color: T.inkSoft }}>{THEME_LABEL[p.theme || "punish"]} · {Math.ceil(p.solution.length / 2) || 1}수</span>
@@ -2592,11 +2708,11 @@ function PuzzleCard({ p, isSolved, onClick, onDelete, solveCount }) {
     </div>
   );
 }
-function PuzzleTab({ puzzles, solved, onSolved, onDeletePuzzle, solveCounts, active, setActive }) {
+function PuzzleTab({ puzzles, solved, lineSolves, onLineSolved, onDeletePuzzle, solveCounts, active, setActive }) {
   const [filter, setFilter] = useState("all");
   const [numInput, setNumInput] = useState("");
   const [numMsg, setNumMsg] = useState("");
-  if (active) return <PuzzleSolver puzzle={active} onClose={() => setActive(null)} onSolved={onSolved} solveCount={solveCounts ? solveCounts[puzzleNo(active.id)] : null} />;
+  if (active) return <PuzzleSolver puzzle={active} onClose={() => setActive(null)} onLineSolved={onLineSolved} solveCount={solveCounts ? solveCounts[puzzleNo(active.id)] : null} solvedTags={lineSolves ? lineSolves[active.id] : null} />;
   const themed = filter === "all" ? puzzles : puzzles.filter((p) => (p.theme || "punish") === filter);
   const byOpening = (a, b) => (a.opening || "").localeCompare(b.opening || "") || (a.name || "").localeCompare(b.name || ""); // (UX4) 오프닝순 정렬
   const open = themed.filter((p) => !solved.has(p.id)).sort(byOpening);
@@ -2626,8 +2742,8 @@ function PuzzleTab({ puzzles, solved, onSolved, onDeletePuzzle, solveCounts, act
       </div>
       {themed.length === 0 ? <div style={{ background: T.paper, border: "1px dashed #C9B58C", borderRadius: 12, padding: 20, textAlign: "center", color: T.inkSoft, fontSize: 13 }}><div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><Mascot name="kokoa" emotion="sleep" size={88} /></div>이 테마의 퍼즐이 아직 없어요.</div>
         : <div>
-            {open.length > 0 && <div style={{ marginBottom: 16 }}><div style={{ fontSize: 12.5, fontWeight: 800, color: T.brassHi, marginBottom: 8 }}>미해결 ({open.length})</div><div className="grid sm:grid-cols-2 gap-3">{open.map((p) => <PuzzleCard key={p.id} p={p} isSolved={false} onClick={() => setActive(p)} onDelete={onDeletePuzzle} solveCount={solveCounts ? solveCounts[puzzleNo(p.id)] : null} />)}</div></div>}
-            {cleared.length > 0 && <div><div style={{ fontSize: 12.5, fontWeight: 800, color: T.best, marginBottom: 8 }}>해결된 퍼즐 ({cleared.length})</div><div className="grid sm:grid-cols-2 gap-3">{cleared.map((p) => <PuzzleCard key={p.id} p={p} isSolved={true} onClick={() => setActive(p)} onDelete={onDeletePuzzle} solveCount={solveCounts ? solveCounts[puzzleNo(p.id)] : null} />)}</div></div>}
+            {open.length > 0 && <div style={{ marginBottom: 16 }}><div style={{ fontSize: 12.5, fontWeight: 800, color: T.brassHi, marginBottom: 8 }}>미해결 ({open.length})</div><div className="grid sm:grid-cols-2 gap-3">{open.map((p) => <PuzzleCard key={p.id} p={p} isSolved={false} onClick={() => setActive(p)} onDelete={onDeletePuzzle} solveCount={solveCounts ? solveCounts[puzzleNo(p.id)] : null} solvedTags={lineSolves ? lineSolves[p.id] : null} />)}</div></div>}
+            {cleared.length > 0 && <div><div style={{ fontSize: 12.5, fontWeight: 800, color: T.best, marginBottom: 8 }}>해결된 퍼즐 ({cleared.length})</div><div className="grid sm:grid-cols-2 gap-3">{cleared.map((p) => <PuzzleCard key={p.id} p={p} isSolved={true} onClick={() => setActive(p)} onDelete={onDeletePuzzle} solveCount={solveCounts ? solveCounts[puzzleNo(p.id)] : null} solvedTags={lineSolves ? lineSolves[p.id] : null} />)}</div></div>}
           </div>}
     </div>
   );
@@ -3700,6 +3816,7 @@ export default function App() {
   const [focusActive, setFocusActive] = useState(false);
   const [toast, setToast] = useState(null);
   const [solved, setSolved] = useState(new Set());
+  const [lineSolves, setLineSolves] = useState({});   // (기능1) { [puzzleId]: string[] } — 라인(tag)별 해결 기록. 전체 라인이 다 모이면 solved로 승격.
   const [user, setUser] = useState(null); // username (표시/검색)
   const [uid, setUid] = useState(null);    // auth uid (데이터 접근)
   const [authOpen, setAuthOpen] = useState(false);
@@ -3753,18 +3870,18 @@ export default function App() {
     try { if (!_rec && !_oauth) acc = await authRestore(); } catch { }
     const activeUid = acc ? acc.uid : null;
     const raw = await store.get(localKeyFor(activeUid));
-    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra);
+    if (raw) { try { const d = JSON.parse(raw); setUnlocked(new Set(d.unlocked || [])); setProfile(d.profile || { nickname: "", chesscom: "" }); setPuzzles(d.puzzles || []); setSolved(new Set(d.solved || [])); setLineSolves(d.lineSolves || {}); setDeletedPuzzles(new Set(d.deleted || [])); setEarnedTitles(new Set(d.titles || [])); if (d.currentTitle) setCurrentTitle(d.currentTitle); if (Array.isArray(d.learnSans)) setLearnSans(d.learnSans); if (d.learnExtra) setLearnExtra(d.learnExtra);
       // (UX1) 새로고침해도 현재 탭·집중 학습·퍼즐 진행 상황이 유지되도록 복원
       if (d.tab) setTab(d.tab); if (Array.isArray(d.learnFuture)) setLearnFuture(d.learnFuture); if (d.learnFocus) setLearnFocus(d.learnFocus); if (d.puzzleActive) setPuzzleActive(d.puzzleActive); if (Array.isArray(d.treeFocus)) setTreeFocus(d.treeFocus);
     } catch { } }
-    if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); }
+    if (acc) { setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.lineSolves) setLineSolves(pr.lineSolves); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); }
     if (_oauth) { try { const oa = await authFromHash(_oauth); try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch { } if (oa) { if (oa.username) onAuth(oa); else setNeedUser(oa); } } catch { } }
     try { const counts = await puzzleSolveCounts(); if (counts && Object.keys(counts).length) setSolveCounts(counts); } catch { }
     setLoaded(true);
   })(); }, []);
   useEffect(() => { if (loaded && uid && user) publishProfile(uid, user, { nickname: profile.nickname || "", photo: profile.photo || "", chesscom: profile.chesscom || "", title: currentTitle || "", firstMoves: profile.firstMoves || null }); }, [loaded, uid, user, profile.nickname, profile.photo, profile.chesscom, currentTitle, profile.firstMoves]);
-  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive, treeFocus })); }, [unlocked, profile, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive, treeFocus]);
-  useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
+  useEffect(() => { if (loaded) store.set(localKeyFor(uid), JSON.stringify({ unlocked: [...unlocked], profile, puzzles, solved: [...solved], lineSolves, deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle, liveOn, learnSans, learnExtra, tab, learnFuture, learnFocus, puzzleActive, treeFocus })); }, [unlocked, profile, puzzles, solved, lineSolves, deletedPuzzles, earnedTitles, currentTitle, liveOn, loaded, learnSans, learnExtra, uid, tab, learnFuture, learnFocus, puzzleActive, treeFocus]);
+  useEffect(() => { if (loaded && uid) progressSave(uid, { unlocked: [...unlocked], puzzles, solved: [...solved], lineSolves, deleted: [...deletedPuzzles], titles: [...earnedTitles], currentTitle }); }, [unlocked, puzzles, solved, lineSolves, deletedPuzzles, earnedTitles, currentTitle, uid, loaded]);
   // (기능4) 해결 횟수로부터 새 칭호 획득 → 영구 저장 + 획득 알림(장착 버튼)
   const titleCounts = useMemo(() => familyCounts(puzzles, solved), [puzzles, solved]);
   useEffect(() => {
@@ -3778,13 +3895,13 @@ export default function App() {
   }, [titleCounts, loaded]);
   const equipTitle = useCallback((id) => { setCurrentTitle(id); setToast((t) => (t && t.type === "title" ? null : t)); }, []);
 
-  const onAuth = useCallback((acc) => { if (!acc) return; setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); setAuthOpen(false); }, []);
+  const onAuth = useCallback((acc) => { if (!acc) return; setUser(acc.username); setUid(acc.uid); const pr = acc.progress || {}; if (pr.unlocked) setUnlocked(new Set(pr.unlocked)); if (pr.puzzles) setPuzzles(pr.puzzles); if (pr.solved) setSolved(new Set(pr.solved)); if (pr.lineSolves) setLineSolves(pr.lineSolves); if (pr.deleted) setDeletedPuzzles(new Set(pr.deleted)); if (pr.titles) setEarnedTitles(new Set(pr.titles)); if (pr.currentTitle) setCurrentTitle(pr.currentTitle); const pub = acc.pub || {}; if (pub.chesscom || pub.nickname) setProfile((p) => ({ ...p, chesscom: pub.chesscom || p.chesscom, nickname: pub.nickname || p.nickname })); setAuthOpen(false); }, []);
   // (UX7) 로그아웃 시 메모리에 남아있던 이전 계정 데이터를 완전히 비운다 — 그대로 두면 로그아웃 화면에서도
   // 잠깐 보이거나, 다음 로그인이 서버에서 못 채운 필드에 이전 계정 값이 남는 사고로 이어질 수 있음.
   const logout = useCallback(() => {
     authLogout();
     setUser(null); setUid(null); setDevOn(false); setConfirmLogout(false);
-    setUnlocked(new Set()); setPuzzles([]); setSolved(new Set()); setDeletedPuzzles(new Set());
+    setUnlocked(new Set()); setPuzzles([]); setSolved(new Set()); setLineSolves({}); setDeletedPuzzles(new Set());
     setEarnedTitles(new Set()); setCurrentTitle(null); setProfile({ nickname: "", chesscom: "" });
     setLearnSans([]); setLearnExtra({}); setTreeFocus([]);
   }, []);
@@ -3803,6 +3920,22 @@ export default function App() {
   const onSavePuzzle = useCallback((pz) => { if (deletedPuzzles.has(pz.id) && !solved.has(pz.id)) return; if (!isPuzzleSequenceValid(pz)) { console.warn("퍼즐 저장 거부(불법 수순):", pz.id); return; } setPuzzles((prev) => { if (prev.some((x) => x.id === pz.id)) return prev; puzzleShare(pz); return [...prev, pz]; }); }, [deletedPuzzles, solved]);
   const onDeletePuzzle = useCallback((id) => { setPuzzles((prev) => prev.filter((x) => x.id !== id)); setDeletedPuzzles((p) => { const n = new Set(p); n.add(id); return n; }); }, []);
   const onSolved = useCallback((id) => { const already = solved.has(id); if (!already) setSolved((p) => { const n = new Set(p); n.add(id); return n; }); if (user && !already) { const no = puzzleNo(id); puzzleSolveInc(no).then((c) => { if (c != null) setSolveCounts((m) => ({ ...m, [no]: c })); }); } }, [user, solved]);
+  // (기능1) 라인(최선/차선/채택률) 하나를 풀 때마다 기록 — 전체 라인이 다 모이면(별 3개) onSolved로 승격해
+  // 기존 "해결완료" 트래킹(칭호·전역 풀이수 등)이 그대로 이어지도록 한다.
+  const onLineSolved = useCallback((id, tag) => {
+    setLineSolves((prev) => {
+      const cur = new Set(prev[id] || []);
+      if (cur.has(tag)) return prev;
+      cur.add(tag);
+      return { ...prev, [id]: [...cur] };
+    });
+  }, []);
+  useEffect(() => {
+    puzzles.forEach((p) => {
+      const total = (p.lines && p.lines.length) || 1;
+      if ((lineSolves[p.id] || []).length >= total && !solved.has(p.id)) onSolved(p.id);
+    });
+  }, [lineSolves, puzzles, solved, onSolved]);
   const switchTab = (k) => { if (k === "dex") setNewUnlocks(0); setNavNonce((n) => n + 1); setTab(k); };
   const onOpenOpening = useCallback((name) => {
     const path = findOpeningPathByName(name);
@@ -3892,7 +4025,7 @@ export default function App() {
       <main style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 18px 110px" }}>
         {tab === "learn" && <LearnTab engine={engine} liveOn={liveOn} onFocusActive={setFocusActive} unlockOpening={unlockOpening} onLearned={onLearned} chesscom={chesscom} onSavePuzzle={onSavePuzzle} contentVer={contentVer} canEdit={canEdit} canAdd={canAdd} bumpContent={bumpContent} sans={learnSans} setSans={setLearnSans} future={learnFuture} setFuture={setLearnFuture} extra={learnExtra} setExtra={setLearnExtra} focus={learnFocus} setFocus={setLearnFocus} puzzles={puzzles} onOpenPuzzle={onOpenPuzzle} onOpenFocusBranch={setTab} />}
         {tab === "dex" && <CollectionTab key={"dex-" + navNonce} unlocked={unlocked} unlockAll={devUnlockAll} liveOn={liveOn} contentVer={contentVer} chesscom={chesscom} earnedTitles={devUnlockAll ? new Set(ALL_TITLE_IDS) : earnedTitles} titleCounts={titleCounts} currentTitle={currentTitle} onEquipTitle={equipTitle} />}
-        {tab === "puzzle" && <PuzzleTab puzzles={puzzles} solved={solved} onSolved={onSolved} onDeletePuzzle={onDeletePuzzle} solveCounts={solveCounts} active={puzzleActive} setActive={setPuzzleActive} />}
+        {tab === "puzzle" && <PuzzleTab puzzles={puzzles} solved={solved} lineSolves={lineSolves} onLineSolved={onLineSolved} onDeletePuzzle={onDeletePuzzle} solveCounts={solveCounts} active={puzzleActive} setActive={setPuzzleActive} />}
         {tab === "set" && <SettingsTab key={"set-" + navNonce} profile={profile} setProfile={setProfile} engineStatus={engine.status} liveOn={liveOn} setLiveOn={setLiveOn} chesscomStatus={chesscom.status} chesscom={chesscom} user={user} isDev={isDev} isCodev={isCodev} devOn={devOn} setDevOn={setDevOn} codevOn={codevOn} setCodevOn={setCodevOn} canManageCodev={canManageCodev} canAdd={canAdd} canEdit={canEdit} bumpContent={bumpContent} contentVer={contentVer} openAuth={openAuth} earnedTitles={earnedTitles} currentTitle={currentTitle} onEquipTitle={equipTitle} onOpenOpening={onOpenOpening} treeFocus={treeFocus} setTreeFocus={setTreeFocus} />}
       </main>
 
