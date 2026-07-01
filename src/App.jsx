@@ -302,7 +302,10 @@ async function lichessFetchWithRetry(url) {
     }
     break;
   }
-  if (!res || !res.ok) throw new Error("lichess " + (res ? res.status : "no-response"));
+  if (!res || !res.ok) {
+    const detail = res ? await res.text().catch(() => "") : "";
+    throw new Error("lichess " + (res ? res.status : "no-response") + " (" + url + ")" + (detail ? ": " + detail.slice(0, 200) : ""));
+  }
   return res;
 }
 async function lichessFetchJson(url) {
@@ -1600,10 +1603,10 @@ function FocusPanel({ fa, onBack, onOpenPuzzle, onJump, onOpenMasterGame }) {
             : masterGames.map((g) => (
               <button key={g.id} onClick={() => handleOpenGame(g.id)} disabled={!!openingGameId} className="press text-left" style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 2px", border: "none", borderTop: "1px solid #E4D5B6", background: "none", cursor: openingGameId ? "default" : "pointer", opacity: openingGameId && openingGameId !== g.id ? 0.5 : 1 }}>
                 <div className="flex items-center justify-between" style={{ fontSize: 12.5 }}>
-                  <span>⬜ {g.winner === "white" && <span title="승리">👑</span>} <b style={{ color: T.ink }}>{(g.white && g.white.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.white && g.white.rating) ?? "—"}</span></span>
+                  <span>⬜ <b style={{ color: T.ink }}>{(g.white && g.white.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.white && g.white.rating) ?? "—"}</span> {g.winner === "white" && <span title="승리">👑</span>}</span>
                   <span style={{ fontWeight: 800, fontFamily: "ui-monospace,monospace", color: g.winner === "white" ? T.best : g.winner === "black" ? T.blunder : T.inkSoft }}>{g.winner === "white" ? "1–0" : g.winner === "black" ? "0–1" : "½–½"}</span>
                 </div>
-                <div style={{ fontSize: 12.5, marginTop: 2 }}>⬛ {g.winner === "black" && <span title="승리">👑</span>} <b style={{ color: T.ink }}>{(g.black && g.black.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.black && g.black.rating) ?? "—"}</span></div>
+                <div style={{ fontSize: 12.5, marginTop: 2 }}>⬛ <b style={{ color: T.ink }}>{(g.black && g.black.name) || "?"}</b> <span style={{ color: T.inkSoft, fontFamily: "ui-monospace,monospace" }}>{(g.black && g.black.rating) ?? "—"}</span> {g.winner === "black" && <span title="승리">👑</span>}</div>
                 <div style={{ fontSize: 10.5, color: T.inkSoft, marginTop: 2 }}>{g.year || ""}{openingGameId === g.id ? " · 기보를 불러오는 중…" : ""}</div>
               </button>
             ))}
