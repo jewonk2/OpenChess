@@ -64,3 +64,51 @@ end; $$;
 grant execute on function public.app_signup(text, text)        to anon, authenticated;
 grant execute on function public.app_login(text, text)         to anon, authenticated;
 grant execute on function public.app_save(text, text, jsonb)   to anon, authenticated;
+
+-- ===== 16차 수정: 퍼즐 카드의 "친구가 풀었어요" 표기 + 추천 퍼즐(일간/주간/월간) 랭킹 =====
+-- 이미 puzzles(no, data, solves), friend_edges(from_uid, to_uid, status), profiles(id, username, pub) 테이블이
+-- (이전 차수에서) 만들어져 있다는 전제 하에 아래를 추가로 실행하세요.
+
+-- 7) 퍼즐별 해결자 uid 기록 — 퍼즐 카드에 "친구 OO, OO 외 N명이 풀었습니다!" 표기용(중복 없이 1인 1행)
+create table if not exists public.puzzle_solvers (
+  no bigint not null,
+  uid uuid not null,
+  solved_at timestamptz not null default now(),
+  primary key (no, uid)
+);
+alter table public.puzzle_solvers enable row level security;
+create policy "solvers read"   on public.puzzle_solvers for select using (true);
+create policy "solvers upsert" on public.puzzle_solvers for insert with check (true);
+create policy "solvers update" on public.puzzle_solvers for update using (true) with check (true);
+
+-- 8) 퍼즐 해결 "이벤트" 로그 — 추천 랭킹 집계용(같은 사람이 같은 퍼즐을 여러 번 풀어도 매번 한 줄씩 쌓임)
+create table if not exists public.puzzle_solve_events (
+  id bigint generated always as identity primary key,
+  no bigint not null,
+  uid uuid,
+  solved_at timestamptz not null default now()
+);
+create index if not exists idx_puzzle_solve_events_no_time on public.puzzle_solve_events(no, solved_at);
+alter table public.puzzle_solve_events enable row level security;
+create policy "solve events read"   on public.puzzle_solve_events for select using (true);
+create policy "solve events insert" on public.puzzle_solve_events for insert with check (true);
+
+-- 9) 기간별(day/week/month) 인기 퍼즐 랭킹 RPC — 상위 N개를 풀이수 내림차순으로 반환
+create or replace function public.puzzle_rank(p_period text, p_limit int default 12)
+returns table(no bigint, cnt bigint) language sql stable as $$
+  select no, count(*) as cnt
+  from public.puzzle_solve_events
+  where solved_at >= now() - (case p_period
+    when 'day' then interval '1 day'
+    when 'week' then interval '7 days'
+    when 'month' then interval '30 days'
+    else interval '1 day'
+  end)
+  group by no
+  order by cnt desc
+  limit p_limit;
+$$;
+
+grant select, insert, update on public.puzzle_solvers        to anon, authenticated;
+grant select, insert         on public.puzzle_solve_events   to anon, authenticated;
+grant execute on function public.puzzle_rank(text, int)       to anon, authenticated;
