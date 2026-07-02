@@ -281,6 +281,14 @@ function materialDiff(board, color) {
   for (const row of board) for (const p of row) if (p) d += (p.c === color ? 1 : -1) * PIECE_VAL_MAT[p.t];
   return d;
 }
+// (15차 추가) 마이너 기물이 시작 칸에서 잡지도/체크도 아니게 그냥 나오는 수(전개하는 수) 또는 캐슬링 —
+// 잡거나 외통을 부르는 게 아니라면 전술적으로 배울 게 없는 수이므로, 이런 수 앞에서 퍼즐 라인을 끊는다.
+const MINOR_HOME_SQUARES = new Set(["b1", "g1", "c1", "f1", "b8", "g8", "c8", "f8"]);
+function isDevelopingMove(uci, san) {
+  if (san === "O-O" || san === "O-O-O") return true;
+  if (san.includes("x") || san.includes("+") || san.includes("#")) return false;
+  return MINOR_HOME_SQUARES.has((uci || "").slice(0, 2));
+}
 /* 풀이 라인을 '해결자(시작 시 둘 차례)가 확실한 우위를 점할 때까지' 연장.
    각 사용자 수 뒤 결과 포지션을 평가(상대 최선 응수 반영)해 사용자 관점 평가가 target(cp) 이상이면 종료.
    희생 콤비처럼 일시적으로 불리해도 보상이 실현되는 지점까지 이어진다. 항상 사용자 수로 끝맺음.
@@ -300,6 +308,8 @@ async function genAdvantageLine(engine, startSans, opts) {
     const movingWhite = cur.length % 2 === 0;
     const san = uciToSan(boardFromSans(cur), ev.best, movingWhite ? "w" : "b");
     if (!san) break;
+    // (15차 추가) 반드시 필요한 첫 수(i===0, 퍼즐의 핵심) 이후로는 전개하는 수/캐슬링이 나오면 그 앞에서 끊는다.
+    if (i >= 1 && isDevelopingMove(ev.best, san)) break;
     const isUserMove = movingWhite === userWhite;
     if (isUserMove && san.includes("x")) sawUserCapture = true;
     out.push(san); cur = [...cur, san];
@@ -325,22 +335,35 @@ async function buildAltLines(engine, solverStartSans, solution, genOpts) {
   const posAfterFirst = [...solverStartSans, solution[0]]; // 상대가 응수할 차례
   const seen = new Set([stripSuffix(solution[1])]);
   const alts = [];
+  let pvs = null;
+  const brd = boardFromSans(posAfterFirst);
+  const color = posAfterFirst.length % 2 === 0 ? "w" : "b";
   try {
-    const brd = boardFromSans(posAfterFirst);
-    const color = posAfterFirst.length % 2 === 0 ? "w" : "b";
-    const pvs = await engine.evaluateMulti(sansToFen(posAfterFirst), 10, 3);
+    pvs = await engine.evaluateMulti(sansToFen(posAfterFirst), 10, 3);
     if (pvs && pvs[1]) {
       const s = uciToSan(brd, pvs[1].uci, color);
       if (s && !seen.has(stripSuffix(s))) { alts.push({ tag: "eval2", move: s }); seen.add(stripSuffix(s)); }
     }
   } catch { /* 실패 시 이 대안은 생략 */ }
+  let adoptFound = false;
   try {
     const lc = await fetchLichess(posAfterFirst, false);
     if (lc && lc.moves && lc.moves.length) {
       const top = [...lc.moves].sort((a, b) => (b.adopt || 0) - (a.adopt || 0))[0];
-      if (top && !seen.has(stripSuffix(top.san))) { alts.push({ tag: "adopt", move: top.san }); seen.add(stripSuffix(top.san)); }
+      if (top && !seen.has(stripSuffix(top.san))) { alts.push({ tag: "adopt", move: top.san }); seen.add(stripSuffix(top.san)); adoptFound = true; }
     }
   } catch { /* 실패 시 이 대안은 생략 */ }
+  // (15차 추가) 퍼즐은 대부분 상대의 실수 직후 위치라 실전 기보(Lichess Explorer)에 데이터가 거의 없다.
+  // 채택률 데이터를 못 구했다면 평가치 3순위 응수로 대체해, 항상 가능한 한 3라인이 만들어지도록 한다.
+  if (!adoptFound) {
+    try {
+      if (!pvs) pvs = await engine.evaluateMulti(sansToFen(posAfterFirst), 10, 3);
+      for (const pv of (pvs || []).slice(1)) {
+        const s = uciToSan(brd, pv.uci, color);
+        if (s && !seen.has(stripSuffix(s))) { alts.push({ tag: "eval3", move: s }); seen.add(stripSuffix(s)); break; }
+      }
+    } catch { /* 실패 시 라인 2개로 유지 */ }
+  }
   const lines = [];
   for (const alt of alts) {
     const afterAlt = [...posAfterFirst, alt.move];
@@ -2549,16 +2572,22 @@ function RevertSlide({ board, from, to, size = 380, flip = false }) {
   );
 }
 // (기능1) 별 3개(라인) 아이콘 — 해결한 라인 수만큼 채워서 표시
-// (15차 기능4) 헤더에 상시 표기되는 레벨 배지 — 현재 레벨과 다음 레벨까지 남은 경험치를 얇은 진행바로 함께 보여준다.
-function LevelBadge({ totalXp, compact }) {
+// (15차 기능4) 헤더에 상시 표기되는 레벨 배지 — 현재 레벨과 다음 레벨까지 남은 경험치를 진행바 + 텍스트로 보여준다.
+// xpGain({amount,key})이 들어오면 "+N XP"가 위로 떠오르며 사라지는 애니메이션을 재생하고(key로 매번 재트리거),
+// 진행바는 폭이 바뀔 때마다 눈에 띄게 차오르도록 긴 이징 트랜지션을 건다.
+function LevelBadge({ totalXp, compact, xpGain }) {
   const { level, xpInLevel, xpForNext } = useMemo(() => levelFromXp(totalXp), [totalXp]);
   const pct = Math.max(0, Math.min(100, Math.round((xpInLevel / xpForNext) * 100)));
   return (
-    <div className="flex flex-col items-center" style={{ gap: 2, flexShrink: 0 }} title={"Lv." + level + " · " + xpInLevel + "/" + xpForNext + " XP"}>
+    <div className="flex flex-col items-center" style={{ gap: 2, flexShrink: 0, position: "relative" }}>
+      {xpGain && (
+        <div key={xpGain.key} style={{ position: "absolute", top: -4, left: "50%", transform: "translateX(-50%)", fontSize: 11.5, fontWeight: 900, color: "#8CE28C", whiteSpace: "nowrap", animation: "xpFloat 1.2s ease forwards", pointerEvents: "none", zIndex: 5 }}>+{xpGain.amount} XP</div>
+      )}
       <div style={{ fontSize: compact ? 9.5 : 10.5, fontWeight: 900, color: T.brassHi, padding: compact ? "1px 6px" : "1px 8px", borderRadius: 999, background: "linear-gradient(180deg,#3A2516,#241509)", border: "1px solid " + T.brass, whiteSpace: "nowrap" }}>Lv.{level}</div>
       <div style={{ width: compact ? 32 : 42, height: 4, borderRadius: 999, background: "rgba(255,255,255,.15)", overflow: "hidden" }}>
-        <div style={{ width: pct + "%", height: "100%", background: T.brass, transition: "width .3s ease" }} />
+        <div style={{ width: pct + "%", height: "100%", background: T.brass, transition: "width 700ms cubic-bezier(.22,.9,.32,1)" }} />
       </div>
+      <div style={{ fontSize: compact ? 8 : 8.5, fontWeight: 700, color: T.brassHi, opacity: .75, whiteSpace: "nowrap" }}>{xpInLevel}/{xpForNext}</div>
     </div>
   );
 }
@@ -2571,7 +2600,7 @@ function LineStars({ total, solved }) {
     </div>
   );
 }
-const LINE_TAG_LABEL = { best: "최선의 응수", eval2: "차선의 응수", adopt: "실전에서 가장 많이 둔 응수" };
+const LINE_TAG_LABEL = { best: "최선의 응수", eval2: "차선의 응수", adopt: "실전에서 가장 많이 둔 응수", eval3: "세 번째로 좋은 응수" };
 function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags }) {
   const theme = puzzle.theme || "punish";
   const setup = [...puzzle.setupSans, puzzle.mistakeSan];
@@ -3958,12 +3987,17 @@ export default function App() {
   // (기능1) 라인(최선/차선/채택률) 하나를 풀 때마다 기록 — 전체 라인이 다 모이면(별 3개) onSolved로 승격해
   // 기존 "해결완료" 트래킹(칭호·전역 풀이수 등)이 그대로 이어지도록 한다.
   // (15차 기능4) 새로 해결한 라인마다 경험치를 지급 — 해당 퍼즐에서 "기존에 이미 보유했던 별 수"를 기준으로 계산한다.
+  const [xpGain, setXpGain] = useState(null);   // (15차) {amount,key} — 헤더에 "+N XP" 잠깐 표시 후 자동으로 사라짐
   const onLineSolved = useCallback((id, tag) => {
     setLineSolves((prev) => {
       const curArr = prev[id] || [];
       if (curArr.includes(tag)) return prev;
       const existingStars = curArr.length;
-      setTotalXp((x) => x + rollLineXp(existingStars));
+      const gain = rollLineXp(existingStars);
+      const gainKey = Date.now();
+      setTotalXp((x) => x + gain);
+      setXpGain({ amount: gain, key: gainKey });
+      setTimeout(() => setXpGain((g) => (g && g.key === gainKey ? null : g)), 1300);
       return { ...prev, [id]: [...curArr, tag] };
     });
   }, []);
@@ -4004,7 +4038,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: "transparent", fontFamily: "system-ui, -apple-system, 'Noto Sans KR', sans-serif" }}>
-      <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}"}</style>
+      <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}} @keyframes xpFloat{0%{transform:translate(-50%,4px);opacity:0}20%{opacity:1}100%{transform:translate(-50%,-16px);opacity:0}}"}</style>
       <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: -2, background: "radial-gradient(130% 120% at 50% -10%, #34230F 0%, #150C06 65%)" }} />
       <GeoBackdrop />
       {/* (UI1) 모바일(좁은 화면)에서 로고/닉네임/로그아웃 등이 너무 붙어 보이던 문제 —
@@ -4015,7 +4049,7 @@ export default function App() {
           <div style={{ fontWeight: 900, fontSize: narrowHeader ? 16 : 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
         <div className="flex items-center" style={{ gap: narrowHeader ? 6 : 10 }}>
-          <LevelBadge totalXp={totalXp} compact={narrowHeader} />
+          <LevelBadge totalXp={totalXp} compact={narrowHeader} xpGain={xpGain} />
           {user ? (
             <>
               <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800, maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user}</span>
