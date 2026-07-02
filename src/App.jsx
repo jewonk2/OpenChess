@@ -2573,16 +2573,12 @@ function RevertSlide({ board, from, to, size = 380, flip = false }) {
 }
 // (기능1) 별 3개(라인) 아이콘 — 해결한 라인 수만큼 채워서 표시
 // (15차 기능4) 헤더에 상시 표기되는 레벨 배지 — 현재 레벨과 다음 레벨까지 남은 경험치를 진행바 + 텍스트로 보여준다.
-// xpGain({amount,key})이 들어오면 "+N XP"가 위로 떠오르며 사라지는 애니메이션을 재생하고(key로 매번 재트리거),
-// 진행바는 폭이 바뀔 때마다 눈에 띄게 차오르도록 긴 이징 트랜지션을 건다.
-function LevelBadge({ totalXp, compact, xpGain }) {
+// 진행바는 폭이 바뀔 때마다 눈에 띄게 차오르도록 긴 이징 트랜지션을 건다("+N XP" 자체는 화면 중앙 토스트로 별도 표시).
+function LevelBadge({ totalXp, compact }) {
   const { level, xpInLevel, xpForNext } = useMemo(() => levelFromXp(totalXp), [totalXp]);
   const pct = Math.max(0, Math.min(100, Math.round((xpInLevel / xpForNext) * 100)));
   return (
     <div className="flex flex-col items-center" style={{ gap: 2, flexShrink: 0, position: "relative" }}>
-      {xpGain && (
-        <div key={xpGain.key} style={{ position: "absolute", top: -4, left: "50%", transform: "translateX(-50%)", fontSize: 11.5, fontWeight: 900, color: "#8CE28C", whiteSpace: "nowrap", animation: "xpFloat 1.2s ease forwards", pointerEvents: "none", zIndex: 5 }}>+{xpGain.amount} XP</div>
-      )}
       <div style={{ fontSize: compact ? 9.5 : 10.5, fontWeight: 900, color: T.brassHi, padding: compact ? "1px 6px" : "1px 8px", borderRadius: 999, background: "linear-gradient(180deg,#3A2516,#241509)", border: "1px solid " + T.brass, whiteSpace: "nowrap" }}>Lv.{level}</div>
       <div style={{ width: compact ? 32 : 42, height: 4, borderRadius: 999, background: "rgba(255,255,255,.15)", overflow: "hidden" }}>
         <div style={{ width: pct + "%", height: "100%", background: T.brass, transition: "width 700ms cubic-bezier(.22,.9,.32,1)" }} />
@@ -2601,6 +2597,29 @@ function LineStars({ total, solved }) {
   );
 }
 const LINE_TAG_LABEL = { best: "최선의 응수", eval2: "차선의 응수", adopt: "실전에서 가장 많이 둔 응수", eval3: "세 번째로 좋은 응수" };
+const STAGE_SHORT_LABEL = { best: "최선", eval2: "차선", adopt: "채택", eval3: "채택" };
+// (15차) 별 3단계(최선→차선→채택)를 반드시 순서대로 풀도록 강제하는 원-선 스테퍼.
+// 이미 해결한 단계와 "다음으로 풀 수 있는 한 단계"까지만 클릭 가능하고, 그 이후 단계는 잠금(회색)으로 표시한다.
+function StageStepper({ allLines, solvedNow, activeTag, reachedIdx, onSelect }) {
+  return (
+    <div className="flex items-start justify-center" style={{ marginBottom: 12, gap: 0 }}>
+      {allLines.map((l, i) => {
+        const isDone = solvedNow.has(l.tag);
+        const locked = i > reachedIdx;
+        const active = l.tag === activeTag;
+        return (
+          <div key={l.tag} className="flex items-start">
+            {i > 0 && <div style={{ width: 26, height: 2, marginTop: 15, background: i <= reachedIdx ? T.brass : "rgba(0,0,0,.15)" }} />}
+            <div className="flex flex-col items-center" style={{ width: 46 }}>
+              <button onClick={() => !locked && onSelect(l.tag)} disabled={locked} className={locked ? "" : "press"} style={{ width: 30, height: 30, borderRadius: "50%", background: isDone ? T.best : active ? T.brass : "transparent", color: isDone || active ? "#fff" : locked ? "rgba(0,0,0,.3)" : T.ink, border: "2px solid " + (active ? T.brassHi : isDone ? T.best : "rgba(0,0,0,.2)"), display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, cursor: locked ? "default" : "pointer" }}>{isDone ? <Check size={15} /> : i + 1}</button>
+              <div style={{ fontSize: 9.5, marginTop: 3, textAlign: "center", color: locked ? "rgba(0,0,0,.3)" : T.inkSoft, fontWeight: active ? 800 : 600 }}>{STAGE_SHORT_LABEL[l.tag] || l.tag}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags }) {
   const theme = puzzle.theme || "punish";
   const setup = [...puzzle.setupSans, puzzle.mistakeSan];
@@ -2656,7 +2675,13 @@ function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags })
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [wrong]);
   const restart = () => { setWrong(null); setReply(null); setSel(null); setIdx(0); setIntro(true); };
-  const switchLine = (tag) => { setActiveTag(tag); setWrong(null); setReply(null); setSel(null); setIdx(0); setIntro(true); setHintText(null); };
+  // (15차) 별 3단계는 반드시 순서대로: 이미 푼 단계들 + "다음으로 풀 수 있는 한 단계"까지만 전환을 허용한다.
+  const reachedIdx = useMemo(() => { const i = allLines.findIndex((l) => !solvedNow.has(l.tag)); return i === -1 ? allLines.length - 1 : i; }, [allLines, solvedNow]);
+  const switchLine = (tag) => {
+    const tagIdx = allLines.findIndex((l) => l.tag === tag);
+    if (tagIdx < 0 || tagIdx > reachedIdx) return;   // 아직 잠긴 단계로는 전환할 수 없다
+    setActiveTag(tag); setWrong(null); setReply(null); setSel(null); setIdx(0); setIntro(true); setHintText(null);
+  };
   // (기능2) 힌트 체계 전면 개편 — 더 이상 마스코트가 처음부터 힌트를 말하지 않는다. 하단 "힌트" 버튼을 누르면
   // 그 시점(idx)에 실제로 두어야 할 수를 기준으로 "움직여야 할 기물" 또는 "중요한 칸" 중 하나를 무작위로 알려준다.
   const [hintText, setHintText] = useState(null);
@@ -2684,7 +2709,11 @@ function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags })
           : theme === "advantage" ? "당신 차례 — 우위를 점하는 수를 두세요."
             : "당신 차례 — 실수를 응징하는 최선의 수를 두세요.";
   const idleBubble = intro ? "직전 수를 살펴보는 중이에요…" : wrong ? "다른 수예요. 다시 시도해 보세요!" : reply ? "상대가 응수하고 있어요…" : "막히면 아래 힌트 버튼을 눌러보세요.";
-  const bubbleText = done ? "훌륭해요! 다음 퍼즐도 도전해 보세요." : (hintText || idleBubble);
+  const fullyComplete = solvedNow.size >= totalLines;
+  const doneBubble = totalLines <= 1 ? "훌륭해요! 다음 퍼즐도 도전해 보세요."
+    : fullyComplete ? "훌륭해요! 모든 단계를 정복했어요."
+    : "이 단계를 완료했어요! 위에서 다음 단계를 선택해 보세요.";
+  const bubbleText = done ? doneBubble : (hintText || idleBubble);
   const lastQpz = useMemo(() => {
     if (idx === 0 || wrong || reply || intro) return null;
     const prevCur = [...setup, ...solution.slice(0, idx - 1)];
@@ -2696,8 +2725,6 @@ function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags })
     const kind = (theme === "sacrifice" && idx === 1) || isSacrifice(boardFromSans(prevCur), mvSan, moverColor) ? "brilliant" : "best";
     return { to: info.to, kind };   // 정답/응수 아이콘 표기
   }, [idx, wrong, reply, intro, theme, activeTag]);
-  const remainingLines = allLines.filter((l) => l.tag !== activeTag && !solvedNow.has(l.tag));
-  const fullyComplete = solvedNow.size >= totalLines;
   return (
     <div style={{ position: "relative", background: T.paper, border: "1px solid #DCCBA8", borderRadius: 14, padding: 16, maxWidth: 460, margin: "0 auto" }}>
       <button onClick={onClose} aria-label="닫기" className="press" style={{ position: "absolute", top: 12, right: 12, zIndex: 10, width: 30, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: T.ebony2, color: T.ivory, border: "1px solid #000", fontSize: 15, fontWeight: 800, lineHeight: 1, cursor: "pointer" }}>✕</button>
@@ -2707,8 +2734,9 @@ function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags })
           <div style={{ fontSize: 15, fontWeight: 800, color: T.ink, lineHeight: 1.35 }}>{puzzle.name}</div>
           <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginTop: 4 }}>#{puzzleNo(puzzle.id)}{solveCount != null && solveCount > 0 ? " · " + fmtFull(solveCount) + "명이 풀었습니다!" : ""}</div>
         </div>
-        {totalLines > 1 && <div style={{ flexShrink: 0, paddingTop: 2 }}><LineStars total={totalLines} solved={solvedNow.size} /></div>}
       </div>
+      {/* (15차) 별 3단계(최선→차선→채택)를 원-선 스테퍼로 시각화 — 순서대로만 진행 가능 */}
+      {totalLines > 1 && <StageStepper allLines={allLines} solvedNow={solvedNow} activeTag={activeTag} reachedIdx={reachedIdx} onSelect={switchLine} />}
       <div key={"bubble-" + hintKey} style={{ marginBottom: 10, animation: "lockpop .35s ease" }}><MascotBubble text={bubbleText} ply={0} mascot={pm[0]} emotion={pm[1]} /></div>
       {/* (기능1) 두었던 수가 하나씩 기보로 표기되도록 */}
       <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "ui-monospace,monospace", marginBottom: 8, minHeight: 16, textAlign: "center" }}>{sansToPgnText([...setup, ...solution.slice(0, idx)]) || " "}</div>
@@ -2730,20 +2758,9 @@ function PuzzleSolver({ puzzle, onClose, onLineSolved, solveCount, solvedTags })
         <div style={{ marginTop: 14, textAlign: "center", background: "linear-gradient(180deg,#3A2516,#241509)", borderRadius: 12, padding: "12px 14px", border: "1px solid " + T.brass }}>
           <div style={{ color: T.brassHi, fontWeight: 800, fontSize: 13 }}>🎉 완전 해결! 별 {totalLines}개를 모두 모았어요.</div>
         </div>
-      ) : remainingLines.length > 0 && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 800, color: T.brass, marginBottom: 6, textAlign: "center" }}>다른 라인도 풀어보세요</div>
-          <div className="flex flex-col gap-2">
-            {remainingLines.map((l) => {
-              const teaserPly = setup.length + 1; // 상대(컴퓨터)의 첫 응수 = l.solution[1]
-              const teaser = l.solution[1] ? moveNumber(teaserPly) + l.solution[1] : "";
-              return (
-                <button key={l.tag} onClick={() => switchLine(l.tag)} className="press" style={{ padding: "8px 12px", borderRadius: 9, background: T.ivoryHi, border: "1px solid #C9B58C", color: T.ink, fontWeight: 700, cursor: "pointer", fontSize: 12, textAlign: "left" }}>
-                  <span style={{ color: T.brass, fontWeight: 800 }}>{LINE_TAG_LABEL[l.tag] || l.tag}</span> — 상대가 <span style={{ fontFamily: "ui-monospace,monospace" }}>{teaser}</span>(으)로 응수한다면?
-                </button>
-              );
-            })}
-          </div>
+      ) : allLines[reachedIdx] && (
+        <div className="flex justify-center" style={{ marginTop: 14 }}>
+          <button onClick={() => switchLine(allLines[reachedIdx].tag)} className="press" style={{ padding: "8px 16px", borderRadius: 9, background: "linear-gradient(180deg," + T.brass + ",#A8842F)", color: "#241509", border: "none", fontWeight: 800, cursor: "pointer", fontSize: 12.5 }}>다음 단계로 — {STAGE_SHORT_LABEL[allLines[reachedIdx].tag] || allLines[reachedIdx].tag}</button>
         </div>
       ))}
     </div>
@@ -3987,17 +4004,16 @@ export default function App() {
   // (기능1) 라인(최선/차선/채택률) 하나를 풀 때마다 기록 — 전체 라인이 다 모이면(별 3개) onSolved로 승격해
   // 기존 "해결완료" 트래킹(칭호·전역 풀이수 등)이 그대로 이어지도록 한다.
   // (15차 기능4) 새로 해결한 라인마다 경험치를 지급 — 해당 퍼즐에서 "기존에 이미 보유했던 별 수"를 기준으로 계산한다.
-  const [xpGain, setXpGain] = useState(null);   // (15차) {amount,key} — 헤더에 "+N XP" 잠깐 표시 후 자동으로 사라짐
+  // 획득량은 화면 중앙 토스트로 크게 표시한다(레벨업 토스트와 같은 자리를 공유 — 레벨업이 뒤이어 발생하면 그쪽으로 자연스럽게 대체됨).
   const onLineSolved = useCallback((id, tag) => {
     setLineSolves((prev) => {
       const curArr = prev[id] || [];
       if (curArr.includes(tag)) return prev;
       const existingStars = curArr.length;
       const gain = rollLineXp(existingStars);
-      const gainKey = Date.now();
       setTotalXp((x) => x + gain);
-      setXpGain({ amount: gain, key: gainKey });
-      setTimeout(() => setXpGain((g) => (g && g.key === gainKey ? null : g)), 1300);
+      setToast({ type: "xp", amount: gain });
+      setTimeout(() => setToast((t) => (t && t.type === "xp" ? null : t)), 1400);
       return { ...prev, [id]: [...curArr, tag] };
     });
   }, []);
@@ -4038,7 +4054,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: "transparent", fontFamily: "system-ui, -apple-system, 'Noto Sans KR', sans-serif" }}>
-      <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}} @keyframes xpFloat{0%{transform:translate(-50%,4px);opacity:0}20%{opacity:1}100%{transform:translate(-50%,-16px);opacity:0}}"}</style>
+      <style>{"button{transition:transform .08s ease, box-shadow .08s ease} button:not(:disabled):active{transform:scale(.94)} @keyframes lockpop{0%{transform:scale(.6);opacity:0}50%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}} @keyframes xpPop{0%{transform:scale(.5);opacity:0}60%{transform:scale(1.08);opacity:1}100%{transform:scale(1);opacity:1}}"}</style>
       <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: -2, background: "radial-gradient(130% 120% at 50% -10%, #34230F 0%, #150C06 65%)" }} />
       <GeoBackdrop />
       {/* (UI1) 모바일(좁은 화면)에서 로고/닉네임/로그아웃 등이 너무 붙어 보이던 문제 —
@@ -4049,7 +4065,7 @@ export default function App() {
           <div style={{ fontWeight: 900, fontSize: narrowHeader ? 16 : 20, letterSpacing: "-.01em", background: "linear-gradient(180deg,#F3E2C0,#C49A50)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>OpenChess</div>
         </div>
         <div className="flex items-center" style={{ gap: narrowHeader ? 6 : 10 }}>
-          <LevelBadge totalXp={totalXp} compact={narrowHeader} xpGain={xpGain} />
+          <LevelBadge totalXp={totalXp} compact={narrowHeader} />
           {user ? (
             <>
               <span style={{ color: T.brassHi, fontSize: 13, fontWeight: 800, maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user}</span>
@@ -4088,7 +4104,15 @@ export default function App() {
         </div>
       )}
 
-      {toast && (
+      {/* (15차) XP 획득은 화면 정중앙에 큼직한 블록으로 잠깐 띄워 눈에 확실히 띄도록 한다(다른 토스트와 별도 레이어). */}
+      {toast && toast.type === "xp" && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 65, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+          <div style={{ animation: "xpPop .5s cubic-bezier(.2,1.4,.4,1)", background: "linear-gradient(180deg,#3A2516,#241509)", color: "#8CE28C", padding: "22px 40px", borderRadius: 20, border: "2px solid " + T.brass, boxShadow: "0 20px 50px -10px rgba(0,0,0,.75)", textAlign: "center" }}>
+            <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: "-.01em" }}>+{toast.amount} XP</div>
+          </div>
+        </div>
+      )}
+      {toast && toast.type !== "xp" && (
         <div style={{ position: "fixed", top: 70, left: "50%", transform: "translateX(-50%)", zIndex: 60, animation: "lockpop .4s ease", width: "calc(100% - 32px)", maxWidth: 360 }}>
           {toast.type === "title" ? (
             <div style={{ background: "linear-gradient(180deg,#3A2516,#241509)", color: T.ivoryHi, padding: 14, borderRadius: 14, border: "1px solid " + T.brass, boxShadow: "0 10px 30px -8px rgba(0,0,0,.7)" }}>
